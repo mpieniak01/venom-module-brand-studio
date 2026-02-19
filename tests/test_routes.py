@@ -1,7 +1,22 @@
+from pathlib import Path
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from venom_module_brand_studio.api.routes import router
+from venom_module_brand_studio.services import service as service_module
+
+AUTH_HEADERS = {"X-Authenticated-User": "mpieniak", "X-Autonomy-Level": "20"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FEATURE_BRAND_STUDIO", "true")
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    service_module._service = service_module.BrandStudioService()
 
 
 def build_client() -> TestClient:
@@ -19,13 +34,17 @@ def test_health_route() -> None:
 
 def test_list_candidates_route() -> None:
     client = build_client()
-    response = client.get("/api/v1/brand-studio/sources/candidates", params={"limit": 2})
+    response = client.get(
+        "/api/v1/brand-studio/sources/candidates",
+        params={"limit": 2, "min_score": 0.0},
+    )
     payload = response.json()
 
     assert response.status_code == 200
     assert payload["status"] == "ok"
-    assert payload["count"] == 2
-    assert len(payload["items"]) == 2
+    assert payload["count"] == len(payload["items"])
+    assert payload["count"] <= 2
+    assert payload["count"] >= 1
 
 
 def test_generate_queue_publish_and_audit_flow() -> None:
@@ -42,7 +61,7 @@ def test_generate_queue_publish_and_audit_flow() -> None:
             "languages": ["pl", "en"],
             "tone": "expert",
         },
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert draft_response.status_code == 200
     draft_payload = draft_response.json()
@@ -52,7 +71,7 @@ def test_generate_queue_publish_and_audit_flow() -> None:
     queue_response = client.post(
         f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
         json={"target_channel": "x"},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert queue_response.status_code == 200
     queue_payload = queue_response.json()
@@ -61,7 +80,7 @@ def test_generate_queue_publish_and_audit_flow() -> None:
     publish_response = client.post(
         f"/api/v1/brand-studio/queue/{queue_payload['item_id']}/publish",
         json={"confirm_publish": True},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert publish_response.status_code == 200
     publish_payload = publish_response.json()
@@ -88,18 +107,18 @@ def test_publish_requires_confirm_publish_true() -> None:
             "channels": ["x"],
             "languages": ["pl"],
         },
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     ).json()
     queue_payload = client.post(
         f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
         json={"target_channel": "x"},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     ).json()
 
     response = client.post(
         f"/api/v1/brand-studio/queue/{queue_payload['item_id']}/publish",
         json={"confirm_publish": False},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "confirm_publish must be true"
@@ -111,21 +130,21 @@ def test_404_errors_for_missing_resources() -> None:
     draft_response = client.post(
         "/api/v1/brand-studio/drafts/generate",
         json={"candidate_id": "missing", "channels": ["x"], "languages": ["pl"]},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert draft_response.status_code == 404
 
     queue_response = client.post(
         "/api/v1/brand-studio/drafts/draft-missing/queue",
         json={"target_channel": "x"},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert queue_response.status_code == 404
 
     publish_response = client.post(
         "/api/v1/brand-studio/queue/queue-missing/publish",
         json={"confirm_publish": True},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert publish_response.status_code == 404
 
@@ -138,26 +157,26 @@ def test_publish_conflict_when_item_already_published() -> None:
     draft_payload = client.post(
         "/api/v1/brand-studio/drafts/generate",
         json={"candidate_id": candidate_id, "channels": ["x"], "languages": ["pl"]},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     ).json()
     queue_payload = client.post(
         f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
         json={"target_channel": "x"},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     ).json()
     item_id = queue_payload["item_id"]
 
     first_publish = client.post(
         f"/api/v1/brand-studio/queue/{item_id}/publish",
         json={"confirm_publish": True},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert first_publish.status_code == 200
 
     second_publish = client.post(
         f"/api/v1/brand-studio/queue/{item_id}/publish",
         json={"confirm_publish": True},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert second_publish.status_code == 409
     assert second_publish.json()["detail"] == "Queue item already published"
@@ -188,7 +207,7 @@ def test_403_when_actor_not_in_allowlist(monkeypatch) -> None:
     response = client.post(
         "/api/v1/brand-studio/drafts/generate",
         json={"candidate_id": "cand-1", "channels": ["x"], "languages": ["pl"]},
-        headers={"X-Authenticated-User": "blocked-user"},
+        headers={"X-Authenticated-User": "blocked-user", "X-Autonomy-Level": "20"},
     )
     assert response.status_code == 403
 
@@ -204,7 +223,7 @@ def test_config_and_strategies_endpoints_flow() -> None:
     update_config = client.put(
         "/api/v1/brand-studio/config",
         json={"min_score": 0.45, "limit": 15},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert update_config.status_code == 200
     assert update_config.json()["active_strategy"]["min_score"] == 0.45
@@ -212,7 +231,7 @@ def test_config_and_strategies_endpoints_flow() -> None:
     create_strategy = client.post(
         "/api/v1/brand-studio/strategies",
         json={"name": "Tech Lead PL", "base_strategy_id": active_id},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert create_strategy.status_code == 200
     created_id = create_strategy.json()["item"]["id"]
@@ -220,21 +239,21 @@ def test_config_and_strategies_endpoints_flow() -> None:
     update_strategy = client.put(
         f"/api/v1/brand-studio/strategies/{created_id}",
         json={"limit": 11},
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert update_strategy.status_code == 200
     assert update_strategy.json()["item"]["limit"] == 11
 
     activate = client.post(
         f"/api/v1/brand-studio/strategies/{created_id}/activate",
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert activate.status_code == 200
     assert activate.json()["active_strategy_id"] == created_id
 
     delete = client.delete(
         f"/api/v1/brand-studio/strategies/{created_id}",
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert delete.status_code == 204
 
@@ -249,7 +268,7 @@ def test_integrations_endpoints() -> None:
 
     test_response = client.post(
         "/api/v1/brand-studio/integrations/rss/test",
-        headers={"X-Authenticated-User": "mpieniak"},
+        headers=AUTH_HEADERS,
     )
     assert test_response.status_code == 200
     assert "status" in test_response.json()

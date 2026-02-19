@@ -28,6 +28,8 @@ from venom_module_brand_studio.api.schemas import (
 )
 from venom_module_brand_studio.services.service import (
     BrandStudioService,
+    LastStrategyDeletionError,
+    StrategyNotFoundError,
     get_brand_studio_service,
     health_payload,
 )
@@ -117,10 +119,15 @@ def _autonomy_guard(
         return
     except HTTPException:
         raise
-    except Exception:
+    except (ModuleNotFoundError, ImportError, AttributeError):
         # Fallback for external module tests/sandbox:
-        # if host forwards autonomy level via header, enforce it.
-        if x_autonomy_level is not None and x_autonomy_level < required_level:
+        # host must forward autonomy level via header; no implicit bypass.
+        if x_autonomy_level is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing autonomy context header (X-Autonomy-Level)",
+            )
+        if x_autonomy_level < required_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
@@ -145,7 +152,17 @@ async def list_candidates(
     channel: Annotated[str | None, Query()] = None,
     lang: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
-    min_score: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    min_score: Annotated[
+        float | None,
+        Query(
+            ge=0.0,
+            le=1.0,
+            description=(
+                "Minimum relevance score. If omitted/null, active strategy default is used. "
+                "Set explicit value (e.g. 0.0) to override strategy default."
+            ),
+        ),
+    ] = None,
 ) -> CandidatesResponse:
     items, refreshed_at = service.list_candidates(
         channel=channel,
@@ -164,9 +181,9 @@ async def list_candidates(
 async def generate_draft(
     payload: DraftGenerateRequest,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> DraftBundle:
     try:
         return service.generate_draft(
@@ -193,9 +210,9 @@ async def queue_draft(
     draft_id: str,
     payload: QueueDraftRequest,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> QueueCreateResponse:
     try:
         item = service.queue_draft(
@@ -234,9 +251,9 @@ async def publish_queue_item(
     item_id: str,
     payload: PublishRequest,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> PublishResult:
     try:
         return service.publish_queue_item(
@@ -298,9 +315,9 @@ async def get_config(
 async def update_config(
     payload: ConfigUpdateRequest,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> ConfigResponse:
     strategy = service.update_active_config(payload, actor=actor)
     active_strategy_id, _ = service.config()
@@ -310,9 +327,9 @@ async def update_config(
 @router.post("/config/refresh", response_model=RefreshResponse)
 async def refresh_config(
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> RefreshResponse:
     refreshed_at, count = service.force_refresh(actor=actor)
     return RefreshResponse(refreshed_at=refreshed_at, count=count)
@@ -336,19 +353,17 @@ async def list_strategies(
 async def create_strategy(
     payload: StrategyCreateRequest,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> StrategyResponse:
     try:
         item = service.create_strategy(payload, actor=actor)
-    except KeyError as exc:
-        if str(exc).strip("'") == "strategy_not_found":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Base strategy not found",
-            ) from exc
-        raise
+    except StrategyNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Base strategy not found",
+        ) from exc
     active_strategy_id, _ = service.strategies()
     return StrategyResponse(item=item, active_strategy_id=active_strategy_id)
 
@@ -362,19 +377,17 @@ async def update_strategy(
     strategy_id: str,
     payload: StrategyUpdateRequest,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> StrategyResponse:
     try:
         item = service.update_strategy(strategy_id, payload, actor=actor)
-    except KeyError as exc:
-        if str(exc).strip("'") == "strategy_not_found":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Strategy not found",
-            ) from exc
-        raise
+    except StrategyNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Strategy not found",
+        ) from exc
     active_strategy_id, _ = service.strategies()
     return StrategyResponse(item=item, active_strategy_id=active_strategy_id)
 
@@ -391,26 +404,22 @@ async def update_strategy(
 async def delete_strategy(
     strategy_id: str,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> None:
     try:
         service.delete_strategy(strategy_id, actor=actor)
-    except KeyError as exc:
-        if str(exc).strip("'") == "strategy_not_found":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Strategy not found",
-            ) from exc
-        raise
-    except ValueError as exc:
-        if str(exc) == "last_strategy_cannot_be_deleted":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Last strategy cannot be deleted",
-            ) from exc
-        raise
+    except StrategyNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Strategy not found",
+        ) from exc
+    except LastStrategyDeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last strategy cannot be deleted",
+        ) from exc
 
 
 @router.post(
@@ -421,19 +430,17 @@ async def delete_strategy(
 async def activate_strategy(
     strategy_id: str,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> ConfigResponse:
     try:
         active = service.activate_strategy(strategy_id, actor=actor)
-    except KeyError as exc:
-        if str(exc).strip("'") == "strategy_not_found":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Strategy not found",
-            ) from exc
-        raise
+    except StrategyNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Strategy not found",
+        ) from exc
     return ConfigResponse(active_strategy_id=active.id, active_strategy=active)
 
 
@@ -453,8 +460,8 @@ async def list_integrations(
 async def test_integration(
     integration_id: IntegrationId,
     _feature: FeatureDep,
-    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
+    _autonomy: AutonomyDep,
 ) -> IntegrationTestResponse:
     return service.test_integration(integration_id=integration_id, actor=actor)

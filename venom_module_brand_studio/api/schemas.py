@@ -144,8 +144,8 @@ class ConfigUpdateRequest(BaseModel):
     cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
     min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     limit: int | None = Field(default=None, ge=1, le=200)
-    active_channels: list[BrandChannel] | None = None
-    draft_languages: list[DraftLanguage] | None = None
+    active_channels: list[BrandChannel] | None = Field(default=None, min_length=1)
+    draft_languages: list[DraftLanguage] | None = Field(default=None, min_length=1)
 
 
 class RefreshResponse(BaseModel):
@@ -159,27 +159,23 @@ class StrategiesResponse(BaseModel):
     items: list[StrategyConfig]
 
 
-class StrategyCreateRequest(BaseModel):
+class StrategyFieldsBase(BaseModel):
+    discovery_mode: DiscoveryMode | None = None
+    rss_urls: list[str] | None = None
+    cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    limit: int | None = Field(default=None, ge=1, le=200)
+    active_channels: list[BrandChannel] | None = Field(default=None, min_length=1)
+    draft_languages: list[DraftLanguage] | None = Field(default=None, min_length=1)
+
+
+class StrategyCreateRequest(StrategyFieldsBase):
     name: str = Field(min_length=1)
     base_strategy_id: str | None = None
-    discovery_mode: DiscoveryMode | None = None
-    rss_urls: list[str] | None = None
-    cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
-    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
-    limit: int | None = Field(default=None, ge=1, le=200)
-    active_channels: list[BrandChannel] | None = None
-    draft_languages: list[DraftLanguage] | None = None
 
 
-class StrategyUpdateRequest(BaseModel):
+class StrategyUpdateRequest(StrategyFieldsBase):
     name: str | None = Field(default=None, min_length=1)
-    discovery_mode: DiscoveryMode | None = None
-    rss_urls: list[str] | None = None
-    cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
-    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
-    limit: int | None = Field(default=None, ge=1, le=200)
-    active_channels: list[BrandChannel] | None = None
-    draft_languages: list[DraftLanguage] | None = None
 
 
 class StrategyResponse(BaseModel):

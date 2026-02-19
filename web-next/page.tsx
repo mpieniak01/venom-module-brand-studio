@@ -151,6 +151,7 @@ export default function BrandStudioPage() {
 
   const [strategies, setStrategies] = useState<StrategyConfig[]>([]);
   const [activeStrategyId, setActiveStrategyId] = useState<string>("");
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string>("");
   const [configForm, setConfigForm] = useState<StrategyConfig>(DEFAULT_FORM);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -268,6 +269,7 @@ export default function BrandStudioPage() {
       const configPayload = (await configResp.json()) as ConfigResponse;
       const strategiesPayload = (await strategiesResp.json()) as StrategiesResponse;
       setActiveStrategyId(configPayload.active_strategy_id);
+      setSelectedStrategyId(configPayload.active_strategy_id);
       setConfigForm(configPayload.active_strategy);
       setStrategies(strategiesPayload.items);
       setStrategyName(configPayload.active_strategy.name);
@@ -412,6 +414,10 @@ export default function BrandStudioPage() {
   );
 
   const saveConfig = useCallback(async () => {
+    if (selectedStrategyId !== activeStrategyId) {
+      setConfigError("Save updates only the active strategy. Activate selected strategy first.");
+      return;
+    }
     setConfigLoading(true);
     setConfigError(null);
     try {
@@ -443,7 +449,7 @@ export default function BrandStudioPage() {
     } finally {
       setConfigLoading(false);
     }
-  }, [configForm, loadAudit, loadCandidates, loadConfig]);
+  }, [activeStrategyId, configForm, loadAudit, loadCandidates, loadConfig, selectedStrategyId]);
 
   const saveStrategy = useCallback(async () => {
     if (!configForm.id) {
@@ -651,22 +657,32 @@ export default function BrandStudioPage() {
   );
 
   const toggleChannel = (value: "x" | "github" | "blog") => {
+    setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.active_channels.includes(value);
+      if (exists && previous.active_channels.length === 1) {
+        setConfigError("At least one channel must remain selected.");
+        return previous;
+      }
       const next = exists
         ? previous.active_channels.filter((item) => item !== value)
         : [...previous.active_channels, value];
-      return { ...previous, active_channels: next.length ? next : previous.active_channels };
+      return { ...previous, active_channels: next };
     });
   };
 
   const toggleLanguage = (value: "pl" | "en") => {
+    setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.draft_languages.includes(value);
+      if (exists && previous.draft_languages.length === 1) {
+        setConfigError("At least one language must remain selected.");
+        return previous;
+      }
       const next = exists
         ? previous.draft_languages.filter((item) => item !== value)
         : [...previous.draft_languages, value];
-      return { ...previous, draft_languages: next.length ? next : previous.draft_languages };
+      return { ...previous, draft_languages: next };
     });
   };
 
@@ -902,16 +918,16 @@ export default function BrandStudioPage() {
         <section className="glass-panel space-y-4 rounded-2xl border border-emerald-500/20 p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.activeStrategy")}</span>
+              <span className="text-xs uppercase text-zinc-400">{t("config.editStrategy")}</span>
               <select
-                value={activeStrategyId}
+                value={selectedStrategyId}
                 onChange={(event) => {
                   const selectedId = event.target.value;
                   const found = strategies.find((item) => item.id === selectedId);
                   if (!found) {
                     return;
                   }
-                  setActiveStrategyId(selectedId);
+                  setSelectedStrategyId(selectedId);
                   setConfigForm(found);
                   setStrategyName(found.name);
                 }}
@@ -924,6 +940,12 @@ export default function BrandStudioPage() {
                 ))}
               </select>
             </label>
+            <div className="space-y-1">
+              <span className="text-xs uppercase text-zinc-400">{t("config.activeStrategy")}</span>
+              <p className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100">
+                {strategies.find((item) => item.id === activeStrategyId)?.name ?? "-"}
+              </p>
+            </div>
             <label className="space-y-1">
               <span className="text-xs uppercase text-zinc-400">{t("config.strategyName")}</span>
               <input
@@ -1055,13 +1077,23 @@ export default function BrandStudioPage() {
           </div>
 
           {configError ? <p className="text-rose-300">{configError}</p> : null}
+          {selectedStrategyId !== activeStrategyId ? (
+            <p className="text-xs text-amber-300">
+              Save applies to active strategy only. Activate selected strategy first.
+            </p>
+          ) : null}
 
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => void saveConfig()}
-              disabled={configLoading}
+              disabled={configLoading || selectedStrategyId !== activeStrategyId}
               className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-100 disabled:opacity-50"
+              title={
+                selectedStrategyId !== activeStrategyId
+                  ? "Save updates only active strategy"
+                  : undefined
+              }
             >
               {t("config.save")}
             </button>
@@ -1104,7 +1136,16 @@ export default function BrandStudioPage() {
             </button>
             <button
               type="button"
-              onClick={() => void deleteStrategy(configForm.id)}
+              onClick={() => {
+                if (
+                  typeof window !== "undefined" &&
+                  window.confirm(
+                    "Czy na pewno usunąć strategię? Tej operacji nie można cofnąć."
+                  )
+                ) {
+                  void deleteStrategy(configForm.id);
+                }
+              }}
               disabled={configLoading || !configForm.id}
               className="rounded-xl border border-rose-500/40 px-4 py-2 text-sm text-rose-100 disabled:opacity-50"
             >
