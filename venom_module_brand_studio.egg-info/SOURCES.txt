@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+tests/test_manifest.py
+tests/test_routes.py
+venom_module_brand_studio/__init__.py
+venom_module_brand_studio.egg-info/PKG-INFO
+venom_module_brand_studio.egg-info/SOURCES.txt
+venom_module_brand_studio.egg-info/dependency_links.txt
+venom_module_brand_studio.egg-info/requires.txt
+venom_module_brand_studio.egg-info/top_level.txt
+venom_module_brand_studio/api/__init__.py
+venom_module_brand_studio/api/routes.py
+venom_module_brand_studio/services/__init__.py
+venom_module_brand_studio/services/service.py
