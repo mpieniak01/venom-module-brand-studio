@@ -6,6 +6,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 PublishStatus = Literal["draft", "ready", "queued", "published", "failed", "cancelled"]
+DiscoveryMode = Literal["stub", "hybrid", "live"]
+BrandChannel = Literal["x", "github", "blog"]
+DraftLanguage = Literal["pl", "en"]
+IntegrationStatus = Literal["configured", "missing", "invalid"]
+IntegrationId = Literal["github_publish", "rss", "hn", "arxiv", "x"]
 
 
 class OpportunityScoreBreakdown(BaseModel):
@@ -39,14 +44,14 @@ class CandidatesResponse(BaseModel):
 
 class DraftGenerateRequest(BaseModel):
     candidate_id: str
-    channels: list[Literal["x", "github", "blog"]] = Field(min_length=1)
-    languages: list[Literal["pl", "en"]] = Field(min_length=1)
+    channels: list[BrandChannel] = Field(min_length=1)
+    languages: list[DraftLanguage] = Field(min_length=1)
     tone: Literal["neutral", "expert", "short", "cta"] | None = None
 
 
 class DraftVariant(BaseModel):
-    channel: Literal["x", "github", "blog"]
-    language: Literal["pl", "en"]
+    channel: BrandChannel
+    language: DraftLanguage
     content: str
 
 
@@ -57,10 +62,10 @@ class DraftBundle(BaseModel):
 
 
 class QueueDraftRequest(BaseModel):
-    target_channel: Literal["x", "github", "blog"]
+    target_channel: BrandChannel
     target_repo: str | None = None
     target_path: str | None = None
-    target_language: Literal["pl", "en"] | None = None
+    target_language: DraftLanguage | None = None
     payload_override: str | None = None
 
 
@@ -86,8 +91,8 @@ class PublishResult(BaseModel):
 class PublishQueueItem(BaseModel):
     item_id: str
     draft_id: str
-    target_channel: Literal["x", "github", "blog"]
-    target_language: Literal["pl", "en"] | None = None
+    target_channel: BrandChannel
+    target_language: DraftLanguage | None = None
     target_repo: str | None = None
     target_path: str | None = None
     payload: str = ""
@@ -114,3 +119,92 @@ class BrandStudioAuditEntry(BaseModel):
 class AuditResponse(BaseModel):
     count: int
     items: list[BrandStudioAuditEntry]
+
+
+class StrategyConfig(BaseModel):
+    id: str
+    name: str = Field(min_length=1)
+    discovery_mode: DiscoveryMode
+    rss_urls: list[str] = Field(default_factory=list)
+    cache_ttl_seconds: int = Field(ge=30, le=86400)
+    min_score: float = Field(ge=0.0, le=1.0)
+    limit: int = Field(ge=1, le=200)
+    active_channels: list[BrandChannel] = Field(min_length=1)
+    draft_languages: list[DraftLanguage] = Field(min_length=1)
+
+
+class ConfigResponse(BaseModel):
+    active_strategy_id: str
+    active_strategy: StrategyConfig
+
+
+class ConfigUpdateRequest(BaseModel):
+    discovery_mode: DiscoveryMode | None = None
+    rss_urls: list[str] | None = None
+    cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    limit: int | None = Field(default=None, ge=1, le=200)
+    active_channels: list[BrandChannel] | None = None
+    draft_languages: list[DraftLanguage] | None = None
+
+
+class RefreshResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    refreshed_at: datetime
+    count: int
+
+
+class StrategiesResponse(BaseModel):
+    active_strategy_id: str
+    items: list[StrategyConfig]
+
+
+class StrategyCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    base_strategy_id: str | None = None
+    discovery_mode: DiscoveryMode | None = None
+    rss_urls: list[str] | None = None
+    cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    limit: int | None = Field(default=None, ge=1, le=200)
+    active_channels: list[BrandChannel] | None = None
+    draft_languages: list[DraftLanguage] | None = None
+
+
+class StrategyUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    discovery_mode: DiscoveryMode | None = None
+    rss_urls: list[str] | None = None
+    cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    limit: int | None = Field(default=None, ge=1, le=200)
+    active_channels: list[BrandChannel] | None = None
+    draft_languages: list[DraftLanguage] | None = None
+
+
+class StrategyResponse(BaseModel):
+    item: StrategyConfig
+    active_strategy_id: str
+
+
+class IntegrationDescriptor(BaseModel):
+    id: IntegrationId
+    name: str
+    requires_key: bool
+    status: IntegrationStatus
+    details: str
+    key_hint: str | None = None
+    masked_secret: str | None = None
+    configured_target: str | None = None
+
+
+class IntegrationsResponse(BaseModel):
+    items: list[IntegrationDescriptor]
+
+
+class IntegrationTestResponse(BaseModel):
+    id: IntegrationId
+    success: bool
+    status: IntegrationStatus
+    tested_at: datetime
+    message: str

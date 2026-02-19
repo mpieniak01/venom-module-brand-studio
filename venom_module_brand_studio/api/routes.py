@@ -8,13 +8,23 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from venom_module_brand_studio.api.schemas import (
     AuditResponse,
     CandidatesResponse,
+    ConfigResponse,
+    ConfigUpdateRequest,
     DraftBundle,
     DraftGenerateRequest,
+    IntegrationId,
+    IntegrationsResponse,
+    IntegrationTestResponse,
     PublishRequest,
     PublishResult,
     QueueCreateResponse,
     QueueDraftRequest,
     QueueResponse,
+    RefreshResponse,
+    StrategiesResponse,
+    StrategyCreateRequest,
+    StrategyResponse,
+    StrategyUpdateRequest,
 )
 from venom_module_brand_studio.services.service import (
     BrandStudioService,
@@ -92,7 +102,7 @@ async def list_candidates(
     channel: Annotated[str | None, Query()] = None,
     lang: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
-    min_score: Annotated[float, Query(ge=0.0, le=1.0)] = 0.0,
+    min_score: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
 ) -> CandidatesResponse:
     items, refreshed_at = service.list_candidates(
         channel=channel,
@@ -226,3 +236,172 @@ async def list_audit(
 ) -> AuditResponse:
     items = service.audit_items()
     return AuditResponse(count=len(items), items=items)
+
+
+@router.get("/config", response_model=ConfigResponse)
+async def get_config(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> ConfigResponse:
+    active_strategy_id, active_strategy = service.config()
+    return ConfigResponse(active_strategy_id=active_strategy_id, active_strategy=active_strategy)
+
+
+@router.put("/config", response_model=ConfigResponse)
+async def update_config(
+    payload: ConfigUpdateRequest,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> ConfigResponse:
+    strategy = service.update_active_config(payload, actor=actor)
+    active_strategy_id, _ = service.config()
+    return ConfigResponse(active_strategy_id=active_strategy_id, active_strategy=strategy)
+
+
+@router.post("/config/refresh", response_model=RefreshResponse)
+async def refresh_config(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> RefreshResponse:
+    refreshed_at, count = service.force_refresh(actor=actor)
+    return RefreshResponse(refreshed_at=refreshed_at, count=count)
+
+
+@router.get("/strategies", response_model=StrategiesResponse)
+async def list_strategies(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> StrategiesResponse:
+    active_strategy_id, items = service.strategies()
+    return StrategiesResponse(active_strategy_id=active_strategy_id, items=items)
+
+
+@router.post(
+    "/strategies",
+    response_model=StrategyResponse,
+    responses={404: {"description": "Base strategy not found"}},
+)
+async def create_strategy(
+    payload: StrategyCreateRequest,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> StrategyResponse:
+    try:
+        item = service.create_strategy(payload, actor=actor)
+    except KeyError as exc:
+        if str(exc).strip("'") == "strategy_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Base strategy not found",
+            ) from exc
+        raise
+    active_strategy_id, _ = service.strategies()
+    return StrategyResponse(item=item, active_strategy_id=active_strategy_id)
+
+
+@router.put(
+    "/strategies/{strategy_id}",
+    response_model=StrategyResponse,
+    responses={404: {"description": "Strategy not found"}},
+)
+async def update_strategy(
+    strategy_id: str,
+    payload: StrategyUpdateRequest,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> StrategyResponse:
+    try:
+        item = service.update_strategy(strategy_id, payload, actor=actor)
+    except KeyError as exc:
+        if str(exc).strip("'") == "strategy_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Strategy not found",
+            ) from exc
+        raise
+    active_strategy_id, _ = service.strategies()
+    return StrategyResponse(item=item, active_strategy_id=active_strategy_id)
+
+
+@router.delete(
+    "/strategies/{strategy_id}",
+    responses={
+        204: {"description": "Strategy deleted"},
+        400: {"description": "Cannot delete last strategy"},
+        404: {"description": "Strategy not found"},
+    },
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_strategy(
+    strategy_id: str,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> None:
+    try:
+        service.delete_strategy(strategy_id, actor=actor)
+    except KeyError as exc:
+        if str(exc).strip("'") == "strategy_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Strategy not found",
+            ) from exc
+        raise
+    except ValueError as exc:
+        if str(exc) == "last_strategy_cannot_be_deleted":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Last strategy cannot be deleted",
+            ) from exc
+        raise
+
+
+@router.post(
+    "/strategies/{strategy_id}/activate",
+    response_model=ConfigResponse,
+    responses={404: {"description": "Strategy not found"}},
+)
+async def activate_strategy(
+    strategy_id: str,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> ConfigResponse:
+    try:
+        active = service.activate_strategy(strategy_id, actor=actor)
+    except KeyError as exc:
+        if str(exc).strip("'") == "strategy_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Strategy not found",
+            ) from exc
+        raise
+    return ConfigResponse(active_strategy_id=active.id, active_strategy=active)
+
+
+@router.get("/integrations", response_model=IntegrationsResponse)
+async def list_integrations(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> IntegrationsResponse:
+    return IntegrationsResponse(items=service.integrations())
+
+
+@router.post(
+    "/integrations/{integration_id}/test",
+    response_model=IntegrationTestResponse,
+)
+async def test_integration(
+    integration_id: IntegrationId,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+) -> IntegrationTestResponse:
+    return service.test_integration(integration_id=integration_id, actor=actor)

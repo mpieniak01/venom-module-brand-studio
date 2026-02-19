@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from venom_module_brand_studio.api.schemas import (
+    ConfigUpdateRequest,
+    StrategyCreateRequest,
+    StrategyUpdateRequest,
+)
 from venom_module_brand_studio.connectors.github import GitHubPublishResult
 from venom_module_brand_studio.services.service import BrandStudioService, _canonical_url
 
@@ -27,8 +32,10 @@ def test_candidates_are_scored_and_deduplicated(monkeypatch) -> None:
     assert len(urls) == len(set(urls))
 
 
-def test_candidates_filters_work_for_lang_and_channel(monkeypatch) -> None:
+def test_candidates_filters_work_for_lang_and_channel(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
     service = BrandStudioService()
 
     pl_items, _ = service.list_candidates(channel=None, lang="pl", limit=50, min_score=0.0)
@@ -90,6 +97,7 @@ def test_live_mode_uses_adapter_results(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "live")
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
 
     def fake_rss(_urls):
         return [
@@ -121,6 +129,7 @@ def test_cache_ttl_avoids_repeated_external_fetch(monkeypatch, tmp_path: Path) -
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_TTL_SECONDS", "3600")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
 
     calls = {"rss": 0}
 
@@ -156,6 +165,7 @@ def test_cache_survives_service_restart(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_TTL_SECONDS", "3600")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
 
     def fake_rss_initial(_urls):
         return [
@@ -237,3 +247,94 @@ def test_queue_and_audit_state_survive_service_restart(monkeypatch, tmp_path: Pa
     assert queue[0].item_id == queue_item.item_id
     assert queue[0].status == "published"
     assert audit
+
+
+def test_strategy_lifecycle_and_config_persistence(monkeypatch, tmp_path: Path) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+
+    service = BrandStudioService()
+    active_id, active = service.config()
+    assert active_id == "default"
+    assert active.discovery_mode == "stub"
+
+    created = service.create_strategy(
+        StrategyCreateRequest(name="Founder EN", discovery_mode="live"),
+        actor="tester",
+    )
+    assert created.id != "default"
+    assert created.discovery_mode == "live"
+
+    updated = service.update_strategy(
+        created.id,
+        StrategyUpdateRequest(min_score=0.55, limit=12),
+        actor="tester",
+    )
+    assert updated.min_score == 0.55
+    assert updated.limit == 12
+
+    active = service.activate_strategy(created.id, actor="tester")
+    assert active.id == created.id
+    service.update_active_config(
+        ConfigUpdateRequest(cache_ttl_seconds=900, rss_urls=["https://example.org/feed.xml"]),
+        actor="tester",
+    )
+
+    service.delete_strategy("default", actor="tester")
+
+    restarted = BrandStudioService()
+    restarted_active_id, restarted_active = restarted.config()
+    assert restarted_active_id == created.id
+    assert restarted_active.cache_ttl_seconds == 900
+    assert restarted_active.rss_urls == ["https://example.org/feed.xml"]
+
+
+def test_integrations_status_and_test(monkeypatch, tmp_path: Path) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "live")
+    monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.delenv("GITHUB_TOKEN_BRAND", raising=False)
+    monkeypatch.delenv("BRAND_TARGET_REPO", raising=False)
+
+    monkeypatch.setattr(
+        "venom_module_brand_studio.services.service.fetch_rss_items",
+        lambda _urls, max_items_per_feed=8: [  # noqa: ARG005
+            {
+                "id": "r1",
+                "source": "rss",
+                "url": "https://example.org/r1",
+                "topic": "t",
+                "summary": "s",
+                "language": "en",
+                "age_minutes": 10,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "venom_module_brand_studio.services.service.fetch_hn_items",
+        lambda max_items=12: [],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        "venom_module_brand_studio.services.service.fetch_arxiv_items",
+        lambda max_items=12: [],  # noqa: ARG005
+    )
+
+    service = BrandStudioService()
+    integrations = {item.id: item for item in service.integrations()}
+    assert integrations["github_publish"].status == "missing"
+    assert integrations["rss"].status == "configured"
+    assert integrations["hn"].status == "configured"
+
+    rss_test = service.test_integration("rss", actor="tester")
+    assert rss_test.success is True
+    assert rss_test.status == "configured"
+
+    github_test = service.test_integration("github_publish", actor="tester")
+    assert github_test.success is False
+    assert github_test.status == "missing"

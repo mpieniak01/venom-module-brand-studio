@@ -11,12 +11,19 @@ from uuid import uuid4
 
 from venom_module_brand_studio.api.schemas import (
     BrandStudioAuditEntry,
+    ConfigUpdateRequest,
     ContentCandidate,
     DraftBundle,
     DraftVariant,
+    IntegrationDescriptor,
+    IntegrationId,
+    IntegrationTestResponse,
     OpportunityScoreBreakdown,
     PublishQueueItem,
     PublishResult,
+    StrategyConfig,
+    StrategyCreateRequest,
+    StrategyUpdateRequest,
 )
 from venom_module_brand_studio.connectors.github import GitHubPublisher
 from venom_module_brand_studio.connectors.sources import (
@@ -184,6 +191,15 @@ def _default_target_path(channel: str) -> str:
     return f"notes/brand-studio/{date_stamp}-brand-studio.md"
 
 
+def _masked_secret(secret: str | None) -> str | None:
+    value = (secret or "").strip()
+    if not value:
+        return None
+    if len(value) <= 4:
+        return "*" * len(value)
+    return f"{'*' * (len(value) - 4)}{value[-4:]}"
+
+
 class BrandStudioService:
     def __init__(self) -> None:
         self._candidates: list[ContentCandidate] = []
@@ -192,19 +208,14 @@ class BrandStudioService:
         self._queue: dict[str, PublishQueueItem] = {}
         self._audit: list[BrandStudioAuditEntry] = []
         self._publisher = GitHubPublisher.from_env()
-        self._cache_ttl_seconds = self._resolve_cache_ttl_seconds()
         self._cache_file = self._resolve_cache_file()
         self._state_file = self._resolve_state_file()
+        self._strategies: dict[str, StrategyConfig] = {}
+        self._active_strategy_id = ""
+        self._last_integration_test: dict[str, datetime] = {}
+        self._init_default_strategy()
         self._load_candidates_cache()
         self._load_runtime_state()
-
-    def _resolve_cache_ttl_seconds(self) -> int:
-        raw = (os.getenv("BRAND_STUDIO_CACHE_TTL_SECONDS") or "1800").strip()
-        try:
-            value = int(raw)
-        except ValueError:
-            return 1800
-        return max(30, value)
 
     def _resolve_cache_file(self) -> Path:
         raw = (os.getenv("BRAND_STUDIO_CACHE_FILE") or "").strip()
@@ -218,11 +229,51 @@ class BrandStudioService:
             return Path(raw)
         return Path("/tmp/venom-brand-studio/runtime-state.json")
 
+    def _init_default_strategy(self) -> None:
+        mode = (os.getenv("BRAND_STUDIO_DISCOVERY_MODE") or "hybrid").strip().lower()
+        if mode not in {"stub", "hybrid", "live"}:
+            mode = "hybrid"
+        rss_urls = [
+            item.strip()
+            for item in (os.getenv("BRAND_STUDIO_RSS_URLS") or "").split(",")
+            if item.strip()
+        ]
+        raw_ttl = (os.getenv("BRAND_STUDIO_CACHE_TTL_SECONDS") or "1800").strip()
+        try:
+            ttl = max(30, min(86400, int(raw_ttl)))
+        except ValueError:
+            ttl = 1800
+        self._strategies = {
+            "default": StrategyConfig(
+                id="default",
+                name="Default",
+                discovery_mode=mode,
+                rss_urls=rss_urls,
+                cache_ttl_seconds=ttl,
+                min_score=0.3,
+                limit=30,
+                active_channels=["x", "github", "blog"],
+                draft_languages=["pl", "en"],
+            )
+        }
+        self._active_strategy_id = "default"
+
+    def _active_strategy(self) -> StrategyConfig:
+        strategy = self._strategies.get(self._active_strategy_id)
+        if strategy is not None:
+            return strategy
+        first = next(iter(self._strategies.values()))
+        self._active_strategy_id = first.id
+        return first
+
+    def _cache_ttl_seconds(self) -> int:
+        return self._active_strategy().cache_ttl_seconds
+
     def _is_cache_fresh(self) -> bool:
         if not self._candidates:
             return False
         age_seconds = (_utcnow() - self._last_refresh_at).total_seconds()
-        return age_seconds <= self._cache_ttl_seconds
+        return age_seconds <= self._cache_ttl_seconds()
 
     def _load_candidates_cache(self) -> None:
         try:
@@ -244,7 +295,6 @@ class BrandStudioService:
                 self._last_refresh_at = self._last_refresh_at.replace(tzinfo=UTC)
             self._candidates = loaded_items
         except Exception:
-            # Cache is best-effort only. Invalid file should not break module startup.
             return
 
     def _persist_candidates_cache(self) -> None:
@@ -256,7 +306,6 @@ class BrandStudioService:
             }
             self._cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception:
-            # Cache write errors must not fail request processing.
             return
 
     def _load_runtime_state(self) -> None:
@@ -266,6 +315,10 @@ class BrandStudioService:
             payload = json.loads(self._state_file.read_text(encoding="utf-8"))
             queue_raw = payload.get("queue")
             audit_raw = payload.get("audit")
+            strategies_raw = payload.get("strategies")
+            active_strategy_id = payload.get("active_strategy_id")
+            integration_raw = payload.get("integration_tests")
+
             if isinstance(queue_raw, list):
                 loaded_queue: dict[str, PublishQueueItem] = {}
                 for item in queue_raw:
@@ -273,14 +326,36 @@ class BrandStudioService:
                         model = PublishQueueItem.model_validate(item)
                         loaded_queue[model.item_id] = model
                 self._queue = loaded_queue
+
             if isinstance(audit_raw, list):
                 loaded_audit: list[BrandStudioAuditEntry] = []
                 for item in audit_raw:
                     if isinstance(item, dict):
                         loaded_audit.append(BrandStudioAuditEntry.model_validate(item))
                 self._audit = loaded_audit
+
+            if isinstance(strategies_raw, list):
+                loaded_strategies: dict[str, StrategyConfig] = {}
+                for item in strategies_raw:
+                    if isinstance(item, dict):
+                        strategy = StrategyConfig.model_validate(item)
+                        loaded_strategies[strategy.id] = strategy
+                if loaded_strategies:
+                    self._strategies = loaded_strategies
+
+            if isinstance(active_strategy_id, str) and active_strategy_id in self._strategies:
+                self._active_strategy_id = active_strategy_id
+
+            if isinstance(integration_raw, dict):
+                loaded: dict[str, datetime] = {}
+                for key, value in integration_raw.items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        try:
+                            loaded[key] = datetime.fromisoformat(value)
+                        except Exception:
+                            pass
+                self._last_integration_test = loaded
         except Exception:
-            # State file is best-effort only.
             return
 
     def _persist_runtime_state(self) -> None:
@@ -289,16 +364,95 @@ class BrandStudioService:
             payload = {
                 "queue": [item.model_dump(mode="json") for item in self._queue.values()],
                 "audit": [item.model_dump(mode="json") for item in self._audit],
+                "strategies": [item.model_dump(mode="json") for item in self._strategies.values()],
+                "active_strategy_id": self._active_strategy_id,
+                "integration_tests": {
+                    key: value.isoformat() for key, value in self._last_integration_test.items()
+                },
             }
             self._state_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception:
-            # Persistence is best-effort and must never break request flow.
             return
 
-    def refresh_candidates(self) -> None:
-        if self._is_cache_fresh():
+    def config(self) -> tuple[str, StrategyConfig]:
+        active = self._active_strategy()
+        return self._active_strategy_id, active
+
+    def update_active_config(self, payload: ConfigUpdateRequest, *, actor: str) -> StrategyConfig:
+        strategy = self._active_strategy().model_copy(deep=True)
+        updates = payload.model_dump(exclude_none=True)
+        strategy = strategy.model_copy(update=updates)
+        self._strategies[strategy.id] = strategy
+        self._add_audit(actor=actor, action="config.update", status="ok", payload=strategy.id)
+        self._persist_runtime_state()
+        return strategy
+
+    def strategies(self) -> tuple[str, list[StrategyConfig]]:
+        items = sorted(self._strategies.values(), key=lambda item: item.name.lower())
+        return self._active_strategy_id, items
+
+    def create_strategy(self, payload: StrategyCreateRequest, *, actor: str) -> StrategyConfig:
+        base = self._active_strategy()
+        if payload.base_strategy_id:
+            base_candidate = self._strategies.get(payload.base_strategy_id)
+            if base_candidate is None:
+                raise KeyError("strategy_not_found")
+            base = base_candidate
+
+        strategy_id = f"strategy-{uuid4().hex[:8]}"
+        created = base.model_copy(update={"id": strategy_id, "name": payload.name})
+        for key, value in payload.model_dump(exclude_none=True).items():
+            if key in {"name", "base_strategy_id"}:
+                continue
+            created = created.model_copy(update={key: value})
+
+        self._strategies[created.id] = created
+        self._persist_runtime_state()
+        self._add_audit(actor=actor, action="strategy.create", status="ok", payload=created.id)
+        return created
+
+    def update_strategy(
+        self,
+        strategy_id: str,
+        payload: StrategyUpdateRequest,
+        *,
+        actor: str,
+    ) -> StrategyConfig:
+        current = self._strategies.get(strategy_id)
+        if current is None:
+            raise KeyError("strategy_not_found")
+        updates = payload.model_dump(exclude_none=True)
+        updated = current.model_copy(update=updates)
+        self._strategies[strategy_id] = updated
+        self._persist_runtime_state()
+        self._add_audit(actor=actor, action="strategy.update", status="ok", payload=strategy_id)
+        return updated
+
+    def delete_strategy(self, strategy_id: str, *, actor: str) -> None:
+        if strategy_id not in self._strategies:
+            raise KeyError("strategy_not_found")
+        if len(self._strategies) == 1:
+            raise ValueError("last_strategy_cannot_be_deleted")
+        del self._strategies[strategy_id]
+        if self._active_strategy_id == strategy_id:
+            self._active_strategy_id = next(iter(self._strategies.keys()))
+        self._persist_runtime_state()
+        self._add_audit(actor=actor, action="strategy.delete", status="ok", payload=strategy_id)
+
+    def activate_strategy(self, strategy_id: str, *, actor: str) -> StrategyConfig:
+        strategy = self._strategies.get(strategy_id)
+        if strategy is None:
+            raise KeyError("strategy_not_found")
+        self._active_strategy_id = strategy_id
+        self._persist_runtime_state()
+        self._add_audit(actor=actor, action="strategy.activate", status="ok", payload=strategy_id)
+        return strategy
+
+    def refresh_candidates(self, *, force: bool = False) -> None:
+        if not force and self._is_cache_fresh():
             return
-        mode = (os.getenv("BRAND_STUDIO_DISCOVERY_MODE") or "hybrid").strip().lower()
+        strategy = self._active_strategy()
+        mode = strategy.discovery_mode
         if mode == "stub":
             self._candidates = _sample_candidates()
             self._last_refresh_at = _utcnow()
@@ -320,14 +474,10 @@ class BrandStudioService:
 
     def _fetch_live_items(self) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
-        rss_urls = [
-            item.strip()
-            for item in (os.getenv("BRAND_STUDIO_RSS_URLS") or "").split(",")
-            if item.strip()
-        ]
+        strategy = self._active_strategy()
         try:
-            if rss_urls:
-                items.extend(fetch_rss_items(rss_urls))
+            if strategy.rss_urls:
+                items.extend(fetch_rss_items(strategy.rss_urls))
         except Exception:
             pass
         try:
@@ -344,24 +494,32 @@ class BrandStudioService:
             pass
         return items
 
+    def force_refresh(self, *, actor: str) -> tuple[datetime, int]:
+        self.refresh_candidates(force=True)
+        self._add_audit(actor=actor, action="config.refresh", status="ok", payload="refresh")
+        return self._last_refresh_at, len(self._candidates)
+
     def list_candidates(
         self,
         *,
         channel: str | None,
         lang: str | None,
         limit: int,
-        min_score: float,
+        min_score: float | None,
     ) -> tuple[list[ContentCandidate], datetime]:
         self.refresh_candidates()
+        strategy = self._active_strategy()
+        effective_min_score = strategy.min_score if min_score is None else min_score
+        effective_limit = min(limit, strategy.limit)
         items = [
             item
             for item in self._candidates
-            if item.score >= min_score
+            if item.score >= effective_min_score
             and (lang is None or item.language == lang)
             and _channel_match(item.source, channel)
         ]
         items.sort(key=lambda it: it.score, reverse=True)
-        return items[:limit], self._last_refresh_at
+        return items[:effective_limit], self._last_refresh_at
 
     def generate_draft(
         self,
@@ -524,7 +682,6 @@ class BrandStudioService:
                     message=f"GitHub publish failed: {exc}",
                 )
 
-        # X channel remains manual in MVP.
         item.status = "published"
         item.updated_at = now
         self._add_audit(
@@ -548,6 +705,138 @@ class BrandStudioService:
 
     def audit_items(self) -> list[BrandStudioAuditEntry]:
         return list(reversed(self._audit))
+
+    def integrations(self) -> list[IntegrationDescriptor]:
+        strategy = self._active_strategy()
+        github_token = (os.getenv("GITHUB_TOKEN_BRAND") or "").strip()
+        github_repo = (os.getenv("BRAND_TARGET_REPO") or "").strip()
+        x_token = (os.getenv("X_API_TOKEN") or "").strip()
+
+        items = [
+            IntegrationDescriptor(
+                id="github_publish",
+                name="GitHub publish",
+                requires_key=True,
+                status="configured" if github_token and github_repo else "missing",
+                details=(
+                    "GitHub connector ready"
+                    if github_token and github_repo
+                    else "Missing GITHUB_TOKEN_BRAND or BRAND_TARGET_REPO"
+                ),
+                key_hint="GITHUB_TOKEN_BRAND",
+                masked_secret=_masked_secret(github_token),
+                configured_target=github_repo or None,
+            ),
+            IntegrationDescriptor(
+                id="rss",
+                name="RSS feeds",
+                requires_key=False,
+                status="configured" if strategy.rss_urls else "missing",
+                details=(
+                    f"Configured feeds: {len(strategy.rss_urls)}"
+                    if strategy.rss_urls
+                    else "No RSS feeds configured"
+                ),
+            ),
+            IntegrationDescriptor(
+                id="hn",
+                name="Hacker News",
+                requires_key=False,
+                status="configured",
+                details="Public API",
+            ),
+            IntegrationDescriptor(
+                id="arxiv",
+                name="arXiv",
+                requires_key=False,
+                status="configured",
+                details="Public API",
+            ),
+            IntegrationDescriptor(
+                id="x",
+                name="X / Twitter",
+                requires_key=True,
+                status="configured" if x_token else "missing",
+                details=(
+                    "Token present (manual publish only)"
+                    if x_token
+                    else "Missing X_API_TOKEN"
+                ),
+                key_hint="X_API_TOKEN",
+                masked_secret=_masked_secret(x_token),
+            ),
+        ]
+        return items
+
+    def test_integration(
+        self,
+        integration_id: IntegrationId,
+        *,
+        actor: str,
+    ) -> IntegrationTestResponse:
+        now = _utcnow()
+        status = "invalid"
+        success = False
+        message = "Unsupported integration"
+
+        try:
+            if integration_id == "github_publish":
+                if self._publisher is None:
+                    status = "missing"
+                    message = "GitHub publisher not configured"
+                else:
+                    self._publisher._repo()  # noqa: SLF001
+                    status = "configured"
+                    success = True
+                    message = "GitHub API reachable"
+            elif integration_id == "rss":
+                urls = self._active_strategy().rss_urls
+                if not urls:
+                    status = "missing"
+                    message = "No RSS URLs configured"
+                else:
+                    items = fetch_rss_items(urls[:1], max_items_per_feed=1)
+                    status = "configured"
+                    success = True
+                    message = f"RSS test ok ({len(items)} item(s))"
+            elif integration_id == "hn":
+                items = fetch_hn_items(max_items=1)
+                status = "configured"
+                success = True
+                message = f"HN test ok ({len(items)} item(s))"
+            elif integration_id == "arxiv":
+                items = fetch_arxiv_items(max_items=1)
+                status = "configured"
+                success = True
+                message = f"arXiv test ok ({len(items)} item(s))"
+            elif integration_id == "x":
+                token = (os.getenv("X_API_TOKEN") or "").strip()
+                if not token:
+                    status = "missing"
+                    message = "Missing X_API_TOKEN"
+                else:
+                    status = "configured"
+                    success = True
+                    message = "Token present (manual publish in MVP)"
+        except Exception as exc:
+            status = "invalid"
+            message = f"Integration test failed: {exc}"
+
+        self._last_integration_test[integration_id] = now
+        self._persist_runtime_state()
+        self._add_audit(
+            actor=actor,
+            action="integration.test",
+            status="ok" if success else "failed",
+            payload=f"{integration_id}:{status}",
+        )
+        return IntegrationTestResponse(
+            id=integration_id,
+            success=success,
+            status=status,
+            tested_at=now,
+            message=message,
+        )
 
     def _add_audit(self, *, actor: str, action: str, status: str, payload: str) -> None:
         payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()

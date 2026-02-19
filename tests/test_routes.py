@@ -191,3 +191,65 @@ def test_403_when_actor_not_in_allowlist(monkeypatch) -> None:
         headers={"X-Authenticated-User": "blocked-user"},
     )
     assert response.status_code == 403
+
+
+def test_config_and_strategies_endpoints_flow() -> None:
+    client = build_client()
+
+    get_config = client.get("/api/v1/brand-studio/config")
+    assert get_config.status_code == 200
+    active_id = get_config.json()["active_strategy_id"]
+    assert active_id
+
+    update_config = client.put(
+        "/api/v1/brand-studio/config",
+        json={"min_score": 0.45, "limit": 15},
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert update_config.status_code == 200
+    assert update_config.json()["active_strategy"]["min_score"] == 0.45
+
+    create_strategy = client.post(
+        "/api/v1/brand-studio/strategies",
+        json={"name": "Tech Lead PL", "base_strategy_id": active_id},
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert create_strategy.status_code == 200
+    created_id = create_strategy.json()["item"]["id"]
+
+    update_strategy = client.put(
+        f"/api/v1/brand-studio/strategies/{created_id}",
+        json={"limit": 11},
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert update_strategy.status_code == 200
+    assert update_strategy.json()["item"]["limit"] == 11
+
+    activate = client.post(
+        f"/api/v1/brand-studio/strategies/{created_id}/activate",
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert activate.status_code == 200
+    assert activate.json()["active_strategy_id"] == created_id
+
+    delete = client.delete(
+        f"/api/v1/brand-studio/strategies/{created_id}",
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert delete.status_code == 204
+
+
+def test_integrations_endpoints() -> None:
+    client = build_client()
+
+    list_response = client.get("/api/v1/brand-studio/integrations")
+    assert list_response.status_code == 200
+    items = list_response.json()["items"]
+    assert any(item["id"] == "github_publish" for item in items)
+
+    test_response = client.post(
+        "/api/v1/brand-studio/integrations/rss/test",
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert test_response.status_code == 200
+    assert "status" in test_response.json()
