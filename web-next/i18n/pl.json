@@ -1,3 +1,19 @@
 {
-  "title": "Brand Studio"
+  "eyebrow": "// BRAND STUDIO",
+  "title": "Brand Studio",
+  "subtitle": "Opportunity Radar do discovery, scoringu i ręcznej publikacji.",
+  "filters.language": "Język",
+  "filters.channel": "Kanał",
+  "filters.minScore": "Min score",
+  "filters.allLanguages": "Wszystkie",
+  "filters.allChannels": "Wszystkie",
+  "filters.loading": "Ładowanie kandydatów...",
+  "filters.error": "Nie udało się pobrać kandydatów.",
+  "filters.refresh": "Odśwież",
+  "stats.count": "Kandydaci",
+  "stats.topScore": "Top score",
+  "stats.freshest": "Najświeższy",
+  "list.empty": "Brak okazji dla aktualnych filtrów.",
+  "list.ageMinutes": "Wiek",
+  "list.reasons": "Powody"
 }

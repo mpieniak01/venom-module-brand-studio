@@ -8,6 +8,15 @@ from pydantic import BaseModel, Field
 PublishStatus = Literal["draft", "ready", "queued", "published", "failed", "cancelled"]
 
 
+class OpportunityScoreBreakdown(BaseModel):
+    relevance: float = Field(..., ge=0.0, le=1.0)
+    timeliness: float = Field(..., ge=0.0, le=1.0)
+    authority_fit: float = Field(..., ge=0.0, le=1.0)
+    risk_penalty: float = Field(..., ge=0.0, le=1.0)
+    final_score: float = Field(..., ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+
+
 class ContentCandidate(BaseModel):
     id: str
     source: str
@@ -17,6 +26,7 @@ class ContentCandidate(BaseModel):
     language: Literal["pl", "en", "other"]
     score: float = Field(..., ge=0.0, le=1.0)
     age_minutes: int = Field(..., ge=0)
+    score_breakdown: OpportunityScoreBreakdown
     reasons: list[str] = Field(default_factory=list)
 
 

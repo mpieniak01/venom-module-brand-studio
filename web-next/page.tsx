@@ -1,11 +1,220 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import de from "./i18n/de.json";
+import en from "./i18n/en.json";
+import pl from "./i18n/pl.json";
+
+type Lang = "pl" | "en" | "de";
+type ApiLang = "pl" | "en" | "other";
+type Channel = "all" | "x" | "github" | "blog";
+
+type Candidate = {
+  id: string;
+  source: string;
+  url: string;
+  topic: string;
+  summary: string;
+  language: ApiLang;
+  score: number;
+  age_minutes: number;
+  reasons: string[];
+};
+
+type CandidatesResponse = {
+  count: number;
+  items: Candidate[];
+};
+
+const dict: Record<Lang, Record<string, string>> = { pl, en, de };
+
 export default function BrandStudioPage() {
+  const [lang, setLang] = useState<Lang>("en");
+  const [apiLang, setApiLang] = useState<"all" | ApiLang>("all");
+  const [channel, setChannel] = useState<Channel>("all");
+  const [minScore, setMinScore] = useState(0.3);
+  const [items, setItems] = useState<Candidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const raw = (typeof navigator !== "undefined" ? navigator.language : "en").toLowerCase();
+    if (raw.startsWith("pl")) {
+      setLang("pl");
+      return;
+    }
+    if (raw.startsWith("de")) {
+      setLang("de");
+      return;
+    }
+    setLang("en");
+  }, []);
+
+  const t = useCallback(
+    (key: string): string => {
+      return dict[lang][key] ?? dict.en[key] ?? key;
+    },
+    [lang]
+  );
+
+  const loadCandidates = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "30");
+      params.set("min_score", String(minScore));
+      if (apiLang !== "all") {
+        params.set("lang", apiLang);
+      }
+      if (channel !== "all") {
+        params.set("channel", channel);
+      }
+
+      const response = await fetch(`/api/v1/brand-studio/sources/candidates?${params.toString()}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as CandidatesResponse;
+      setItems(payload.items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setLoading(false);
+    }
+  }, [apiLang, channel, minScore]);
+
+  useEffect(() => {
+    void loadCandidates();
+  }, [loadCandidates]);
+
+  const stats = useMemo(() => {
+    if (!items.length) {
+      return { count: 0, topScore: 0, freshest: "-" };
+    }
+    const topScore = Math.max(...items.map((item) => item.score));
+    const freshestMinutes = Math.min(...items.map((item) => item.age_minutes));
+    return { count: items.length, topScore, freshest: `${freshestMinutes}m` };
+  }, [items]);
+
   return (
-    <div className="space-y-4">
-      <p className="eyebrow">// BRAND STUDIO</p>
-      <h1 className="text-3xl font-semibold text-white">Brand Studio</h1>
-      <p className="text-zinc-400">Module skeleton ready for discovery/drafts/publish workflow.</p>
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <p className="eyebrow">{t("eyebrow")}</p>
+        <h1 className="text-3xl font-semibold text-white">{t("title")}</h1>
+        <p className="text-zinc-400">{t("subtitle")}</p>
+      </div>
+
+      <section className="grid gap-3 md:grid-cols-4">
+        <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4">
+          <p className="text-xs uppercase text-zinc-400">{t("stats.count")}</p>
+          <p className="text-2xl font-semibold text-white">{stats.count}</p>
+        </div>
+        <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4">
+          <p className="text-xs uppercase text-zinc-400">{t("stats.topScore")}</p>
+          <p className="text-2xl font-semibold text-white">{stats.topScore.toFixed(2)}</p>
+        </div>
+        <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4">
+          <p className="text-xs uppercase text-zinc-400">{t("stats.freshest")}</p>
+          <p className="text-2xl font-semibold text-white">{stats.freshest}</p>
+        </div>
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={() => void loadCandidates()}
+            className="rounded-xl border border-cyan-500/30 px-4 py-2 text-sm text-cyan-100 transition hover:border-cyan-400"
+          >
+            {t("filters.refresh")}
+          </button>
+        </div>
+      </section>
+
+      <section className="glass-panel space-y-4 rounded-2xl border border-cyan-500/20 p-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className="space-y-1">
+            <span className="text-xs uppercase text-zinc-400">{t("filters.language")}</span>
+            <select
+              value={apiLang}
+              onChange={(event) => setApiLang(event.target.value as "all" | ApiLang)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+            >
+              <option value="all">{t("filters.allLanguages")}</option>
+              <option value="pl">PL</option>
+              <option value="en">EN</option>
+              <option value="other">OTHER</option>
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs uppercase text-zinc-400">{t("filters.channel")}</span>
+            <select
+              value={channel}
+              onChange={(event) => setChannel(event.target.value as Channel)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+            >
+              <option value="all">{t("filters.allChannels")}</option>
+              <option value="x">X</option>
+              <option value="github">GitHub</option>
+              <option value="blog">Blog</option>
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs uppercase text-zinc-400">
+              {t("filters.minScore")}: {minScore.toFixed(2)}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={minScore}
+              onChange={(event) => setMinScore(Number(event.target.value))}
+              className="w-full"
+            />
+          </label>
+        </div>
+
+        {loading ? <p className="text-zinc-400">{t("filters.loading")}</p> : null}
+        {error ? <p className="text-rose-300">{t("filters.error")}</p> : null}
+        {!loading && !error && !items.length ? <p className="text-zinc-400">{t("list.empty")}</p> : null}
+
+        {!loading && !error && items.length ? (
+          <div className="space-y-3">
+            {items.map((item) => (
+              <article
+                key={item.id}
+                className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-4 text-sm"
+              >
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs uppercase">
+                  <span className="rounded bg-cyan-900/40 px-2 py-1 text-cyan-100">{item.source}</span>
+                  <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-200">{item.language}</span>
+                  <span className="rounded bg-emerald-900/30 px-2 py-1 text-emerald-100">
+                    score {item.score.toFixed(2)}
+                  </span>
+                  <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-200">
+                    {t("list.ageMinutes")}: {item.age_minutes}m
+                  </span>
+                </div>
+                <h3 className="text-base font-medium text-zinc-100">{item.topic}</h3>
+                <p className="mt-1 text-zinc-300">{item.summary}</p>
+                <p className="mt-2 text-zinc-400">
+                  {t("list.reasons")}: {item.reasons.join(", ")}
+                </p>
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-flex text-cyan-300 hover:text-cyan-200"
+                >
+                  {item.url}
+                </a>
+              </article>
+            ))}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }
