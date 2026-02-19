@@ -88,10 +88,53 @@ def _actor_optional(actor: str = Depends(_actor_from_headers)) -> str:
     return actor
 
 
+def _autonomy_guard(
+    x_autonomy_level: Annotated[int | None, Header(alias="X-Autonomy-Level")] = None,
+) -> None:
+    """
+    Module uses core autonomy as the single source of truth.
+    No independent permission model is introduced in module layer.
+    """
+    required_level_raw = (os.getenv("BRAND_STUDIO_REQUIRED_AUTONOMY_LEVEL") or "20").strip()
+    try:
+        required_level = int(required_level_raw)
+    except ValueError:
+        required_level = 20
+
+    # Preferred path: shared core PermissionGuard from Venom runtime.
+    try:
+        from venom_core.core.permission_guard import permission_guard  # type: ignore
+
+        current_level = int(permission_guard.get_current_level())
+        if current_level < required_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Insufficient autonomy level for Brand Studio operation "
+                    f"(current={current_level}, required={required_level})"
+                ),
+            )
+        return
+    except HTTPException:
+        raise
+    except Exception:
+        # Fallback for external module tests/sandbox:
+        # if host forwards autonomy level via header, enforce it.
+        if x_autonomy_level is not None and x_autonomy_level < required_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Insufficient autonomy level for Brand Studio operation "
+                    f"(current={x_autonomy_level}, required={required_level})"
+                ),
+            )
+
+
 ServiceDep = Annotated[BrandStudioService, Depends(get_brand_studio_service)]
 FeatureDep = Annotated[None, Depends(_feature_guard)]
 ActorDep = Annotated[str, Depends(_actor_required)]
 OptionalActorDep = Annotated[str, Depends(_actor_optional)]
+AutonomyDep = Annotated[None, Depends(_autonomy_guard)]
 
 
 @router.get("/sources/candidates", response_model=CandidatesResponse)
@@ -121,6 +164,7 @@ async def list_candidates(
 async def generate_draft(
     payload: DraftGenerateRequest,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> DraftBundle:
@@ -149,6 +193,7 @@ async def queue_draft(
     draft_id: str,
     payload: QueueDraftRequest,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> QueueCreateResponse:
@@ -189,6 +234,7 @@ async def publish_queue_item(
     item_id: str,
     payload: PublishRequest,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> PublishResult:
@@ -252,6 +298,7 @@ async def get_config(
 async def update_config(
     payload: ConfigUpdateRequest,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> ConfigResponse:
@@ -263,6 +310,7 @@ async def update_config(
 @router.post("/config/refresh", response_model=RefreshResponse)
 async def refresh_config(
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> RefreshResponse:
@@ -288,6 +336,7 @@ async def list_strategies(
 async def create_strategy(
     payload: StrategyCreateRequest,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> StrategyResponse:
@@ -313,6 +362,7 @@ async def update_strategy(
     strategy_id: str,
     payload: StrategyUpdateRequest,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> StrategyResponse:
@@ -341,6 +391,7 @@ async def update_strategy(
 async def delete_strategy(
     strategy_id: str,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> None:
@@ -370,6 +421,7 @@ async def delete_strategy(
 async def activate_strategy(
     strategy_id: str,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> ConfigResponse:
@@ -401,6 +453,7 @@ async def list_integrations(
 async def test_integration(
     integration_id: IntegrationId,
     _feature: FeatureDep,
+    _autonomy: AutonomyDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> IntegrationTestResponse:
