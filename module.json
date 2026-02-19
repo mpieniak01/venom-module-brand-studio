@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "module_id": "brand_studio",
+  "display_name": "Brand Studio",
+  "backend": {
+    "router_import": "venom_module_brand_studio.api.routes:router",
+    "module_api_version": "1.0.0",
+    "min_core_version": "1.5.0"
+  },
+  "frontend": {
+    "nav_path": "/brand-studio",
+    "feature_flag": "NEXT_PUBLIC_FEATURE_BRAND_STUDIO",
+    "nav_label": "Brand Studio",
+    "nav_labels": {
+      "pl": "Brand Studio",
+      "en": "Brand Studio",
+      "de": "Brand Studio"
+    },
+    "component_import": "../../../modules/venom-module-brand-studio/web-next/page"
+  }
+}

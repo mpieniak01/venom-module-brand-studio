@@ -1,0 +1,9 @@
+[project]
+name = "venom-module-brand-studio"
+version = "0.1.0"
+description = "Optional Brand Studio module for Venom"
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
