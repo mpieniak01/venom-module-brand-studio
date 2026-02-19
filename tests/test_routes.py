@@ -70,7 +70,7 @@ def test_generate_queue_publish_and_audit_flow() -> None:
 
     queue_response = client.post(
         f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
-        json={"target_channel": "x"},
+        json={"target_channel": "x", "account_id": "default-x"},
         headers=AUTH_HEADERS,
     )
     assert queue_response.status_code == 200
@@ -272,3 +272,50 @@ def test_integrations_endpoints() -> None:
     )
     assert test_response.status_code == 200
     assert "status" in test_response.json()
+
+
+def test_channel_accounts_crud_flow() -> None:
+    client = build_client()
+
+    channels = client.get("/api/v1/brand-studio/channels")
+    assert channels.status_code == 200
+    assert any(item["id"] == "github" for item in channels.json()["items"])
+
+    create = client.post(
+        "/api/v1/brand-studio/channels/devto/accounts",
+        json={"display_name": "Dev.to main", "target": "devto-user", "is_default": True},
+        headers=AUTH_HEADERS,
+    )
+    assert create.status_code == 200
+    account_id = create.json()["item"]["account_id"]
+
+    listed = client.get("/api/v1/brand-studio/channels/devto/accounts")
+    assert listed.status_code == 200
+    assert any(item["account_id"] == account_id for item in listed.json()["items"])
+
+    update = client.put(
+        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}",
+        json={"display_name": "Dev.to updated"},
+        headers=AUTH_HEADERS,
+    )
+    assert update.status_code == 200
+    assert update.json()["item"]["display_name"] == "Dev.to updated"
+
+    activate = client.post(
+        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}/activate",
+        headers=AUTH_HEADERS,
+    )
+    assert activate.status_code == 200
+
+    test_response = client.post(
+        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}/test",
+        headers=AUTH_HEADERS,
+    )
+    assert test_response.status_code == 200
+    assert test_response.json()["account_id"] == account_id
+
+    delete = client.delete(
+        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}",
+        headers=AUTH_HEADERS,
+    )
+    assert delete.status_code == 204

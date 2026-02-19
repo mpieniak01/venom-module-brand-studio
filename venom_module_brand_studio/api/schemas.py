@@ -7,7 +7,19 @@ from pydantic import BaseModel, Field
 
 PublishStatus = Literal["draft", "ready", "queued", "published", "failed", "cancelled"]
 DiscoveryMode = Literal["stub", "hybrid", "live"]
-BrandChannel = Literal["x", "github", "blog"]
+BrandChannel = Literal[
+    "x",
+    "github",
+    "blog",
+    "linkedin",
+    "medium",
+    "hf_blog",
+    "hf_spaces",
+    "reddit",
+    "devto",
+    "hashnode",
+]
+ChannelId = BrandChannel
 DraftLanguage = Literal["pl", "en"]
 IntegrationStatus = Literal["configured", "missing", "invalid"]
 IntegrationId = Literal["github_publish", "rss", "hn", "arxiv", "x"]
@@ -63,6 +75,7 @@ class DraftBundle(BaseModel):
 
 class QueueDraftRequest(BaseModel):
     target_channel: BrandChannel
+    account_id: str | None = None
     target_repo: str | None = None
     target_path: str | None = None
     target_language: DraftLanguage | None = None
@@ -95,6 +108,8 @@ class PublishQueueItem(BaseModel):
     target_language: DraftLanguage | None = None
     target_repo: str | None = None
     target_path: str | None = None
+    account_id: str | None = None
+    account_display_name: str | None = None
     payload: str = ""
     status: PublishStatus
     created_at: datetime
@@ -131,6 +146,7 @@ class StrategyConfig(BaseModel):
     limit: int = Field(ge=1, le=200)
     active_channels: list[BrandChannel] = Field(min_length=1)
     draft_languages: list[DraftLanguage] = Field(min_length=1)
+    default_accounts: dict[BrandChannel, str] = Field(default_factory=dict)
 
 
 class ConfigResponse(BaseModel):
@@ -146,6 +162,7 @@ class ConfigUpdateRequest(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=200)
     active_channels: list[BrandChannel] | None = Field(default=None, min_length=1)
     draft_languages: list[DraftLanguage] | None = Field(default=None, min_length=1)
+    default_accounts: dict[BrandChannel, str] | None = None
 
 
 class RefreshResponse(BaseModel):
@@ -167,6 +184,7 @@ class StrategyFieldsBase(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=200)
     active_channels: list[BrandChannel] | None = Field(default=None, min_length=1)
     draft_languages: list[DraftLanguage] | None = Field(default=None, min_length=1)
+    default_accounts: dict[BrandChannel, str] | None = None
 
 
 class StrategyCreateRequest(StrategyFieldsBase):
@@ -200,6 +218,59 @@ class IntegrationsResponse(BaseModel):
 
 class IntegrationTestResponse(BaseModel):
     id: IntegrationId
+    success: bool
+    status: IntegrationStatus
+    tested_at: datetime
+    message: str
+
+
+class ChannelAccount(BaseModel):
+    account_id: str
+    channel: ChannelId
+    display_name: str = Field(min_length=1)
+    target: str | None = None
+    enabled: bool = True
+    is_default: bool = False
+    secret_status: IntegrationStatus = "missing"
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class ChannelAccountCreateRequest(BaseModel):
+    display_name: str = Field(min_length=1)
+    target: str | None = None
+    enabled: bool = True
+    is_default: bool = False
+
+
+class ChannelAccountUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1)
+    target: str | None = None
+    enabled: bool | None = None
+    is_default: bool | None = None
+
+
+class ChannelAccountsResponse(BaseModel):
+    channel: ChannelId
+    items: list[ChannelAccount]
+
+
+class ChannelAccountResponse(BaseModel):
+    item: ChannelAccount
+
+
+class ChannelDescriptor(BaseModel):
+    id: ChannelId
+    accounts_count: int
+    default_account_id: str | None = None
+
+
+class ChannelsResponse(BaseModel):
+    items: list[ChannelDescriptor]
+
+
+class ChannelAccountTestResponse(BaseModel):
+    channel: ChannelId
+    account_id: str
     success: bool
     status: IntegrationStatus
     tested_at: datetime

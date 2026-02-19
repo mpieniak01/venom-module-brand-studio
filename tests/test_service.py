@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from venom_module_brand_studio.api.schemas import (
+    ChannelAccountCreateRequest,
+    ChannelAccountUpdateRequest,
     ConfigUpdateRequest,
     StrategyCreateRequest,
     StrategyUpdateRequest,
@@ -338,3 +340,66 @@ def test_integrations_status_and_test(monkeypatch, tmp_path: Path) -> None:
     github_test = service.test_integration("github_publish", actor="tester")
     assert github_test.success is False
     assert github_test.status == "missing"
+
+
+def test_channel_accounts_lifecycle_and_queue_binding(monkeypatch, tmp_path: Path) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    accounts_file = tmp_path / "accounts-state.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+
+    service = BrandStudioService()
+    created = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Dev.to Main",
+            target="devto-user",
+            is_default=True,
+        ),
+        actor="tester",
+    )
+    assert created.channel == "devto"
+    assert created.is_default is True
+
+    listed = service.channel_accounts("devto")
+    assert listed.items
+    assert listed.items[0].account_id == created.account_id
+
+    updated = service.update_channel_account(
+        "devto",
+        created.account_id,
+        ChannelAccountUpdateRequest(display_name="Dev.to Updated"),
+        actor="tester",
+    )
+    assert updated.display_name == "Dev.to Updated"
+
+    test_result = service.test_channel_account("devto", created.account_id, actor="tester")
+    assert test_result.account_id == created.account_id
+    assert test_result.status in {"missing", "configured", "invalid"}
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="devto",
+        account_id=created.account_id,
+        target_language="pl",
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+    )
+    assert queue_item.account_id == created.account_id
+    assert queue_item.account_display_name == "Dev.to Updated"
+
+    service.delete_channel_account("devto", created.account_id, actor="tester")
+    assert service.channel_accounts("devto").items == []

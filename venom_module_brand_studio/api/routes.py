@@ -8,6 +8,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from venom_module_brand_studio.api.schemas import (
     AuditResponse,
     CandidatesResponse,
+    ChannelAccountCreateRequest,
+    ChannelAccountResponse,
+    ChannelAccountsResponse,
+    ChannelAccountTestResponse,
+    ChannelAccountUpdateRequest,
+    ChannelId,
+    ChannelsResponse,
     ConfigResponse,
     ConfigUpdateRequest,
     DraftBundle,
@@ -28,6 +35,7 @@ from venom_module_brand_studio.api.schemas import (
 )
 from venom_module_brand_studio.services.service import (
     BrandStudioService,
+    ChannelAccountNotFoundError,
     LastStrategyDeletionError,
     StrategyNotFoundError,
     get_brand_studio_service,
@@ -218,6 +226,7 @@ async def queue_draft(
         item = service.queue_draft(
             draft_id=draft_id,
             target_channel=payload.target_channel,
+            account_id=payload.account_id,
             target_language=payload.target_language,
             target_repo=payload.target_repo,
             target_path=payload.target_path,
@@ -465,3 +474,126 @@ async def test_integration(
     _autonomy: AutonomyDep,
 ) -> IntegrationTestResponse:
     return service.test_integration(integration_id=integration_id, actor=actor)
+
+
+@router.get("/channels", response_model=ChannelsResponse)
+async def list_channels(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> ChannelsResponse:
+    return service.channels()
+
+
+@router.get("/channels/{channel}/accounts", response_model=ChannelAccountsResponse)
+async def list_channel_accounts(
+    channel: ChannelId,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> ChannelAccountsResponse:
+    return service.channel_accounts(channel)
+
+
+@router.post("/channels/{channel}/accounts", response_model=ChannelAccountResponse)
+async def create_channel_account(
+    channel: ChannelId,
+    payload: ChannelAccountCreateRequest,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> ChannelAccountResponse:
+    item = service.create_channel_account(channel, payload, actor=actor)
+    return ChannelAccountResponse(item=item)
+
+
+@router.put(
+    "/channels/{channel}/accounts/{account_id}",
+    response_model=ChannelAccountResponse,
+    responses={404: {"description": "Account not found"}},
+)
+async def update_channel_account(
+    channel: ChannelId,
+    account_id: str,
+    payload: ChannelAccountUpdateRequest,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> ChannelAccountResponse:
+    try:
+        item = service.update_channel_account(channel, account_id, payload, actor=actor)
+    except ChannelAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        ) from exc
+    return ChannelAccountResponse(item=item)
+
+
+@router.delete(
+    "/channels/{channel}/accounts/{account_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "Account not found"}},
+)
+async def delete_channel_account(
+    channel: ChannelId,
+    account_id: str,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> None:
+    try:
+        service.delete_channel_account(channel, account_id, actor=actor)
+    except ChannelAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        ) from exc
+
+
+@router.post(
+    "/channels/{channel}/accounts/{account_id}/activate",
+    response_model=ChannelAccountResponse,
+    responses={404: {"description": "Account not found"}},
+)
+async def activate_channel_account(
+    channel: ChannelId,
+    account_id: str,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> ChannelAccountResponse:
+    try:
+        item = service.activate_channel_account(channel, account_id, actor=actor)
+    except ChannelAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        ) from exc
+    return ChannelAccountResponse(item=item)
+
+
+@router.post(
+    "/channels/{channel}/accounts/{account_id}/test",
+    response_model=ChannelAccountTestResponse,
+    responses={404: {"description": "Account not found"}},
+)
+async def test_channel_account(
+    channel: ChannelId,
+    account_id: str,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> ChannelAccountTestResponse:
+    try:
+        return service.test_channel_account(channel, account_id, actor=actor)
+    except ChannelAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        ) from exc

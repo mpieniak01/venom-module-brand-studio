@@ -13,12 +13,21 @@ from uuid import uuid4
 
 from venom_module_brand_studio.api.schemas import (
     BrandStudioAuditEntry,
+    ChannelAccount,
+    ChannelAccountCreateRequest,
+    ChannelAccountsResponse,
+    ChannelAccountTestResponse,
+    ChannelAccountUpdateRequest,
+    ChannelDescriptor,
+    ChannelId,
+    ChannelsResponse,
     ConfigUpdateRequest,
     ContentCandidate,
     DraftBundle,
     DraftVariant,
     IntegrationDescriptor,
     IntegrationId,
+    IntegrationStatus,
     IntegrationTestResponse,
     OpportunityScoreBreakdown,
     PublishQueueItem,
@@ -44,6 +53,24 @@ class StrategyNotFoundError(KeyError):
 
 class LastStrategyDeletionError(ValueError):
     pass
+
+
+class ChannelAccountNotFoundError(KeyError):
+    pass
+
+
+SUPPORTED_CHANNELS: tuple[ChannelId, ...] = (
+    "x",
+    "github",
+    "blog",
+    "linkedin",
+    "medium",
+    "hf_blog",
+    "hf_spaces",
+    "reddit",
+    "devto",
+    "hashnode",
+)
 
 
 def _utcnow() -> datetime:
@@ -222,13 +249,19 @@ class BrandStudioService:
         self._publisher = GitHubPublisher.from_env()
         self._cache_file = self._resolve_cache_file()
         self._state_file = self._resolve_state_file()
+        self._accounts_file = self._resolve_accounts_file()
         self._strategies: dict[str, StrategyConfig] = {}
+        self._accounts: dict[ChannelId, dict[str, ChannelAccount]] = {
+            channel: {} for channel in SUPPORTED_CHANNELS
+        }
         self._active_strategy_id = ""
         self._last_integration_test: dict[str, datetime] = {}
         self._lock = RLock()
         self._init_default_strategy()
+        self._init_default_accounts()
         self._load_candidates_cache()
         self._load_runtime_state()
+        self._load_accounts_state()
 
     def _resolve_cache_file(self) -> Path:
         raw = (os.getenv("BRAND_STUDIO_CACHE_FILE") or "").strip()
@@ -241,6 +274,12 @@ class BrandStudioService:
         if raw:
             return Path(raw)
         return Path("/tmp/venom-brand-studio/runtime-state.json")
+
+    def _resolve_accounts_file(self) -> Path:
+        raw = (os.getenv("BRAND_STUDIO_ACCOUNTS_FILE") or "").strip()
+        if raw:
+            return Path(raw)
+        return Path("/tmp/venom-brand-studio/accounts-state.json")
 
     def _init_default_strategy(self) -> None:
         mode = (os.getenv("BRAND_STUDIO_DISCOVERY_MODE") or "hybrid").strip().lower()
@@ -267,9 +306,41 @@ class BrandStudioService:
                 limit=30,
                 active_channels=["x", "github", "blog"],
                 draft_languages=["pl", "en"],
+                default_accounts={},
             )
         }
         self._active_strategy_id = "default"
+
+    def _init_default_accounts(self) -> None:
+        defaults: dict[ChannelId, list[tuple[str, str | None]]] = {
+            "github": [("default-github", os.getenv("BRAND_TARGET_REPO"))],
+            "blog": [("default-blog", os.getenv("BRAND_TARGET_REPO"))],
+            "x": [("default-x", None)],
+        }
+        for channel, items in defaults.items():
+            for account_id, target in items:
+                self._accounts[channel][account_id] = ChannelAccount(
+                    account_id=account_id,
+                    channel=channel,
+                    display_name=account_id.replace("-", " ").title(),
+                    target=(target or None),
+                    enabled=True,
+                    is_default=True,
+                    secret_status=self._secret_status_for_channel(channel),
+                    capabilities=self._capabilities_for_channel(channel),
+                )
+            self._mark_single_default(channel)
+
+        default_strategy = self._strategies.get("default")
+        if default_strategy is not None:
+            default_accounts: dict[ChannelId, str] = {}
+            for channel in ("x", "github", "blog"):
+                default = self._default_account_for_channel(channel)
+                if default is not None:
+                    default_accounts[channel] = default.account_id
+            self._strategies["default"] = default_strategy.model_copy(
+                update={"default_accounts": default_accounts}
+            )
 
     def _active_strategy(self) -> StrategyConfig:
         strategy = self._strategies.get(self._active_strategy_id)
@@ -390,6 +461,116 @@ class BrandStudioService:
             logger.warning("Brand Studio runtime state persist failed: %s", exc)
             return
 
+    def _secret_status_for_channel(self, channel: ChannelId) -> IntegrationStatus:
+        if channel in {"blog", "github"}:
+            token = (os.getenv("GITHUB_TOKEN_BRAND") or "").strip()
+            return "configured" if token else "missing"
+        if channel == "x":
+            return "configured" if (os.getenv("X_API_TOKEN") or "").strip() else "missing"
+        if channel == "linkedin":
+            return "configured" if (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip() else "missing"
+        if channel == "medium":
+            return "configured" if (os.getenv("MEDIUM_TOKEN") or "").strip() else "missing"
+        if channel in {"hf_blog", "hf_spaces"}:
+            return "configured" if (os.getenv("HF_TOKEN") or "").strip() else "missing"
+        if channel == "reddit":
+            client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
+            client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
+            return "configured" if client_id and client_secret else "missing"
+        if channel == "devto":
+            return "configured" if (os.getenv("DEVTO_API_KEY") or "").strip() else "missing"
+        if channel == "hashnode":
+            return "configured" if (os.getenv("HASHNODE_TOKEN") or "").strip() else "missing"
+        return "invalid"
+
+    def _capabilities_for_channel(self, channel: ChannelId) -> list[str]:
+        if channel in {"github", "blog"}:
+            return ["publish_markdown", "queue"]
+        if channel in {"x", "linkedin", "reddit", "devto", "hashnode", "medium"}:
+            return ["manual_publish_mvp", "queue"]
+        if channel in {"hf_blog", "hf_spaces"}:
+            return ["planned_connector", "queue"]
+        return ["queue"]
+
+    def _mark_single_default(self, channel: ChannelId) -> None:
+        accounts = self._accounts.get(channel, {})
+        if not accounts:
+            return
+        default_ids = [
+            item.account_id for item in accounts.values() if item.is_default and item.enabled
+        ]
+        chosen_id = default_ids[0] if default_ids else next(iter(accounts.keys()))
+        for account_id, account in list(accounts.items()):
+            accounts[account_id] = account.model_copy(
+                update={"is_default": account_id == chosen_id}
+            )
+
+    def _default_account_for_channel(self, channel: ChannelId) -> ChannelAccount | None:
+        accounts = self._accounts.get(channel, {})
+        if not accounts:
+            return None
+        for account in accounts.values():
+            if account.is_default and account.enabled:
+                return account
+        for account in accounts.values():
+            if account.enabled:
+                return account
+        return None
+
+    def _refresh_account_runtime_fields(self) -> None:
+        for channel, accounts in self._accounts.items():
+            secret_status = self._secret_status_for_channel(channel)
+            capabilities = self._capabilities_for_channel(channel)
+            for account_id, account in list(accounts.items()):
+                accounts[account_id] = account.model_copy(
+                    update={"secret_status": secret_status, "capabilities": capabilities}
+                )
+            self._mark_single_default(channel)
+
+    def _load_accounts_state(self) -> None:
+        try:
+            if not self._accounts_file.exists():
+                self._refresh_account_runtime_fields()
+                return
+            payload = json.loads(self._accounts_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                self._refresh_account_runtime_fields()
+                return
+            for channel in SUPPORTED_CHANNELS:
+                raw_items = payload.get(channel)
+                if not isinstance(raw_items, list):
+                    continue
+                loaded: dict[str, ChannelAccount] = {}
+                for raw in raw_items:
+                    if not isinstance(raw, dict):
+                        continue
+                    item = ChannelAccount.model_validate(raw)
+                    loaded[item.account_id] = item
+                if loaded:
+                    self._accounts[channel] = loaded
+            self._refresh_account_runtime_fields()
+        except Exception as exc:
+            logger.warning("Brand Studio accounts state load failed: %s", exc)
+            self._refresh_account_runtime_fields()
+            return
+
+    def _persist_accounts_state(self) -> None:
+        try:
+            self._accounts_file.parent.mkdir(parents=True, exist_ok=True)
+            payload: dict[str, list[dict[str, object]]] = {}
+            for channel in SUPPORTED_CHANNELS:
+                payload[channel] = [
+                    item.model_dump(mode="json")
+                    for item in self._accounts.get(channel, {}).values()
+                ]
+            self._accounts_file.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Brand Studio accounts state persist failed: %s", exc)
+            return
+
     def config(self) -> tuple[str, StrategyConfig]:
         with self._lock:
             active = self._active_strategy()
@@ -472,6 +653,197 @@ class BrandStudioService:
                 payload=strategy_id,
             )
             return strategy
+
+    def channels(self) -> ChannelsResponse:
+        with self._lock:
+            self._refresh_account_runtime_fields()
+            items: list[ChannelDescriptor] = []
+            for channel in SUPPORTED_CHANNELS:
+                accounts = self._accounts.get(channel, {})
+                default = self._default_account_for_channel(channel)
+                items.append(
+                    ChannelDescriptor(
+                        id=channel,
+                        accounts_count=len(accounts),
+                        default_account_id=default.account_id if default else None,
+                    )
+                )
+            return ChannelsResponse(items=items)
+
+    def channel_accounts(self, channel: ChannelId) -> ChannelAccountsResponse:
+        with self._lock:
+            self._refresh_account_runtime_fields()
+            items = list(self._accounts.get(channel, {}).values())
+            items.sort(key=lambda item: item.display_name.lower())
+            return ChannelAccountsResponse(channel=channel, items=items)
+
+    def create_channel_account(
+        self,
+        channel: ChannelId,
+        payload: ChannelAccountCreateRequest,
+        *,
+        actor: str,
+    ) -> ChannelAccount:
+        with self._lock:
+            account_id = f"{channel}-{uuid4().hex[:8]}"
+            current = self._accounts.get(channel, {})
+            created = ChannelAccount(
+                account_id=account_id,
+                channel=channel,
+                display_name=payload.display_name,
+                target=payload.target,
+                enabled=payload.enabled,
+                is_default=payload.is_default or len(current) == 0,
+                secret_status=self._secret_status_for_channel(channel),
+                capabilities=self._capabilities_for_channel(channel),
+            )
+            current[account_id] = created
+            self._mark_single_default(channel)
+            self._persist_accounts_state()
+            self._add_audit(
+                actor=actor,
+                action="account.create",
+                status="ok",
+                payload=f"{channel}:{account_id}",
+            )
+            active = self._active_strategy()
+            if not active.default_accounts.get(channel):
+                default = self._default_account_for_channel(channel)
+                if default is not None:
+                    updated_defaults = dict(active.default_accounts)
+                    updated_defaults[channel] = default.account_id
+                    self._strategies[active.id] = active.model_copy(
+                        update={"default_accounts": updated_defaults}
+                    )
+                    self._persist_runtime_state()
+            return current[account_id]
+
+    def update_channel_account(
+        self,
+        channel: ChannelId,
+        account_id: str,
+        payload: ChannelAccountUpdateRequest,
+        *,
+        actor: str,
+    ) -> ChannelAccount:
+        with self._lock:
+            current = self._accounts.get(channel, {})
+            account = current.get(account_id)
+            if account is None:
+                raise ChannelAccountNotFoundError("account_not_found")
+            updates = payload.model_dump(exclude_none=True)
+            updated = account.model_copy(update=updates)
+            current[account_id] = updated
+            self._mark_single_default(channel)
+            self._persist_accounts_state()
+            self._add_audit(
+                actor=actor,
+                action="account.update",
+                status="ok",
+                payload=f"{channel}:{account_id}",
+            )
+            return current[account_id]
+
+    def delete_channel_account(self, channel: ChannelId, account_id: str, *, actor: str) -> None:
+        with self._lock:
+            current = self._accounts.get(channel, {})
+            if account_id not in current:
+                raise ChannelAccountNotFoundError("account_not_found")
+            del current[account_id]
+            self._mark_single_default(channel)
+            self._persist_accounts_state()
+            self._add_audit(
+                actor=actor,
+                action="account.delete",
+                status="ok",
+                payload=f"{channel}:{account_id}",
+            )
+            # Clean strategy mappings from removed account.
+            for strategy_id, strategy in list(self._strategies.items()):
+                if strategy.default_accounts.get(channel) == account_id:
+                    defaults = dict(strategy.default_accounts)
+                    defaults.pop(channel, None)
+                    self._strategies[strategy_id] = strategy.model_copy(
+                        update={"default_accounts": defaults}
+                    )
+            self._persist_runtime_state()
+
+    def activate_channel_account(
+        self,
+        channel: ChannelId,
+        account_id: str,
+        *,
+        actor: str,
+    ) -> ChannelAccount:
+        with self._lock:
+            current = self._accounts.get(channel, {})
+            account = current.get(account_id)
+            if account is None:
+                raise ChannelAccountNotFoundError("account_not_found")
+            for candidate_id, candidate in list(current.items()):
+                current[candidate_id] = candidate.model_copy(
+                    update={"is_default": candidate_id == account_id}
+                )
+            self._persist_accounts_state()
+            active = self._active_strategy()
+            defaults = dict(active.default_accounts)
+            defaults[channel] = account_id
+            self._strategies[active.id] = active.model_copy(update={"default_accounts": defaults})
+            self._persist_runtime_state()
+            self._add_audit(
+                actor=actor,
+                action="account.activate",
+                status="ok",
+                payload=f"{channel}:{account_id}",
+            )
+            return current[account_id]
+
+    def test_channel_account(
+        self,
+        channel: ChannelId,
+        account_id: str,
+        *,
+        actor: str,
+    ) -> ChannelAccountTestResponse:
+        with self._lock:
+            current = self._accounts.get(channel, {})
+            account = current.get(account_id)
+            if account is None:
+                raise ChannelAccountNotFoundError("account_not_found")
+            status = self._secret_status_for_channel(channel)
+            success = status == "configured"
+            message = "Account configured"
+            if status == "missing":
+                message = "Missing credentials for channel"
+            elif status == "invalid":
+                message = "Invalid channel configuration"
+
+            if channel in {"github", "blog"} and success and self._publisher is not None:
+                try:
+                    self._publisher.validate_connection()
+                    message = "GitHub API reachable for account"
+                except Exception as exc:
+                    status = "invalid"
+                    success = False
+                    message = f"GitHub test failed: {exc}"
+
+            tested_at = _utcnow()
+            current[account_id] = account.model_copy(update={"secret_status": status})
+            self._persist_accounts_state()
+            self._add_audit(
+                actor=actor,
+                action="account.test",
+                status="ok" if success else "failed",
+                payload=f"{channel}:{account_id}:{status}",
+            )
+            return ChannelAccountTestResponse(
+                channel=channel,
+                account_id=account_id,
+                success=success,
+                status=status,
+                tested_at=tested_at,
+                message=message,
+            )
 
     def refresh_candidates(self, *, force: bool = False) -> None:
         if not force and self._is_cache_fresh():
@@ -591,6 +963,7 @@ class BrandStudioService:
         target_path: str | None,
         payload_override: str | None,
         actor: str,
+        account_id: str | None = None,
     ) -> PublishQueueItem:
         bundle = self._drafts.get(draft_id)
         if bundle is None:
@@ -603,22 +976,48 @@ class BrandStudioService:
             raise KeyError("draft_variant_not_found")
 
         payload = payload_override or candidate_variant.content
+        selected_account = self._resolve_account_for_queue(
+            target_channel=target_channel, account_id=account_id
+        )
         now = _utcnow()
         item = PublishQueueItem(
             item_id=f"queue-{uuid4().hex[:10]}",
             draft_id=draft_id,
             target_channel=target_channel,
             target_language=candidate_variant.language,
-            target_repo=target_repo or os.getenv("BRAND_TARGET_REPO"),
+            target_repo=target_repo
+            or (selected_account.target if selected_account else None)
+            or os.getenv("BRAND_TARGET_REPO"),
             target_path=target_path or _default_target_path(target_channel),
+            account_id=selected_account.account_id if selected_account else None,
+            account_display_name=selected_account.display_name if selected_account else None,
             payload=payload,
             status="queued",
             created_at=now,
             updated_at=now,
         )
         self._queue[item.item_id] = item
+        self._persist_runtime_state()
         self._add_audit(actor=actor, action="queue.create", status="queued", payload=item.item_id)
         return item
+
+    def _resolve_account_for_queue(
+        self,
+        *,
+        target_channel: str,
+        account_id: str | None,
+    ) -> ChannelAccount | None:
+        channel = target_channel if target_channel in SUPPORTED_CHANNELS else None
+        if channel is None:
+            return None
+        accounts = self._accounts.get(channel, {})
+        if account_id:
+            return accounts.get(account_id)
+        strategy = self._active_strategy()
+        strategy_default = strategy.default_accounts.get(channel)
+        if strategy_default and strategy_default in accounts:
+            return accounts[strategy_default]
+        return self._default_account_for_channel(channel)
 
     def _choose_variant(
         self,
@@ -654,6 +1053,7 @@ class BrandStudioService:
             if self._publisher is None:
                 item.status = "failed"
                 item.updated_at = now
+                self._persist_runtime_state()
                 self._add_audit(
                     actor=actor,
                     action="queue.publish",
@@ -677,6 +1077,7 @@ class BrandStudioService:
                 )
                 item.status = "published"
                 item.updated_at = now
+                self._persist_runtime_state()
                 self._add_audit(
                     actor=actor,
                     action="queue.publish",
@@ -694,6 +1095,7 @@ class BrandStudioService:
             except Exception as exc:
                 item.status = "failed"
                 item.updated_at = now
+                self._persist_runtime_state()
                 self._add_audit(
                     actor=actor,
                     action="queue.publish",
@@ -709,18 +1111,19 @@ class BrandStudioService:
 
         item.status = "published"
         item.updated_at = now
+        self._persist_runtime_state()
         self._add_audit(
             actor=actor,
             action="queue.publish",
             status="manual",
-            payload=f"{item_id}:x",
+            payload=f"{item_id}:{item.target_channel}",
         )
         return PublishResult(
             success=True,
             status="published",
             published_at=now,
             external_id=f"manual-{item_id}",
-            message="X publish marked as manual-complete in MVP",
+            message=f"{item.target_channel} publish marked as manual-complete in MVP",
         )
 
     def queue_items(self) -> list[PublishQueueItem]:
