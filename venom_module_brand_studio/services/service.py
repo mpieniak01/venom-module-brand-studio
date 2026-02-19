@@ -7,6 +7,7 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -224,6 +225,7 @@ class BrandStudioService:
         self._strategies: dict[str, StrategyConfig] = {}
         self._active_strategy_id = ""
         self._last_integration_test: dict[str, datetime] = {}
+        self._lock = RLock()
         self._init_default_strategy()
         self._load_candidates_cache()
         self._load_runtime_state()
@@ -389,38 +391,42 @@ class BrandStudioService:
             return
 
     def config(self) -> tuple[str, StrategyConfig]:
-        active = self._active_strategy()
-        return self._active_strategy_id, active
+        with self._lock:
+            active = self._active_strategy()
+            return self._active_strategy_id, active
 
     def update_active_config(self, payload: ConfigUpdateRequest, *, actor: str) -> StrategyConfig:
-        strategy = self._active_strategy().model_copy(deep=True)
-        updates = payload.model_dump(exclude_none=True)
-        strategy = strategy.model_copy(update=updates)
-        self._strategies[strategy.id] = strategy
-        self._add_audit(actor=actor, action="config.update", status="ok", payload=strategy.id)
-        self._persist_runtime_state()
-        return strategy
+        with self._lock:
+            strategy = self._active_strategy().model_copy(deep=True)
+            updates = payload.model_dump(exclude_none=True)
+            strategy = strategy.model_copy(update=updates)
+            self._strategies[strategy.id] = strategy
+            self._add_audit(actor=actor, action="config.update", status="ok", payload=strategy.id)
+            self._persist_runtime_state()
+            return strategy
 
     def strategies(self) -> tuple[str, list[StrategyConfig]]:
-        items = sorted(self._strategies.values(), key=lambda item: item.name.lower())
-        return self._active_strategy_id, items
+        with self._lock:
+            items = sorted(self._strategies.values(), key=lambda item: item.name.lower())
+            return self._active_strategy_id, items
 
     def create_strategy(self, payload: StrategyCreateRequest, *, actor: str) -> StrategyConfig:
-        base = self._active_strategy()
-        if payload.base_strategy_id:
-            base_candidate = self._strategies.get(payload.base_strategy_id)
-            if base_candidate is None:
-                raise StrategyNotFoundError("strategy_not_found")
-            base = base_candidate
+        with self._lock:
+            base = self._active_strategy()
+            if payload.base_strategy_id:
+                base_candidate = self._strategies.get(payload.base_strategy_id)
+                if base_candidate is None:
+                    raise StrategyNotFoundError("strategy_not_found")
+                base = base_candidate
 
-        strategy_id = f"strategy-{uuid4().hex[:8]}"
-        updates = payload.model_dump(exclude_none=True, exclude={"name", "base_strategy_id"})
-        created = base.model_copy(update={"id": strategy_id, "name": payload.name, **updates})
+            strategy_id = f"strategy-{uuid4().hex[:8]}"
+            updates = payload.model_dump(exclude_none=True, exclude={"name", "base_strategy_id"})
+            created = base.model_copy(update={"id": strategy_id, "name": payload.name, **updates})
 
-        self._strategies[created.id] = created
-        self._persist_runtime_state()
-        self._add_audit(actor=actor, action="strategy.create", status="ok", payload=created.id)
-        return created
+            self._strategies[created.id] = created
+            self._persist_runtime_state()
+            self._add_audit(actor=actor, action="strategy.create", status="ok", payload=created.id)
+            return created
 
     def update_strategy(
         self,
@@ -429,35 +435,43 @@ class BrandStudioService:
         *,
         actor: str,
     ) -> StrategyConfig:
-        current = self._strategies.get(strategy_id)
-        if current is None:
-            raise StrategyNotFoundError("strategy_not_found")
-        updates = payload.model_dump(exclude_none=True)
-        updated = current.model_copy(update=updates)
-        self._strategies[strategy_id] = updated
-        self._persist_runtime_state()
-        self._add_audit(actor=actor, action="strategy.update", status="ok", payload=strategy_id)
-        return updated
+        with self._lock:
+            current = self._strategies.get(strategy_id)
+            if current is None:
+                raise StrategyNotFoundError("strategy_not_found")
+            updates = payload.model_dump(exclude_none=True)
+            updated = current.model_copy(update=updates)
+            self._strategies[strategy_id] = updated
+            self._persist_runtime_state()
+            self._add_audit(actor=actor, action="strategy.update", status="ok", payload=strategy_id)
+            return updated
 
     def delete_strategy(self, strategy_id: str, *, actor: str) -> None:
-        if strategy_id not in self._strategies:
-            raise StrategyNotFoundError("strategy_not_found")
-        if len(self._strategies) == 1:
-            raise LastStrategyDeletionError("last_strategy_cannot_be_deleted")
-        del self._strategies[strategy_id]
-        if self._active_strategy_id == strategy_id:
-            self._active_strategy_id = sorted(self._strategies.keys())[0]
-        self._persist_runtime_state()
-        self._add_audit(actor=actor, action="strategy.delete", status="ok", payload=strategy_id)
+        with self._lock:
+            if strategy_id not in self._strategies:
+                raise StrategyNotFoundError("strategy_not_found")
+            if len(self._strategies) == 1:
+                raise LastStrategyDeletionError("last_strategy_cannot_be_deleted")
+            del self._strategies[strategy_id]
+            if self._active_strategy_id == strategy_id:
+                self._active_strategy_id = sorted(self._strategies.keys())[0]
+            self._persist_runtime_state()
+            self._add_audit(actor=actor, action="strategy.delete", status="ok", payload=strategy_id)
 
     def activate_strategy(self, strategy_id: str, *, actor: str) -> StrategyConfig:
-        strategy = self._strategies.get(strategy_id)
-        if strategy is None:
-            raise StrategyNotFoundError("strategy_not_found")
-        self._active_strategy_id = strategy_id
-        self._persist_runtime_state()
-        self._add_audit(actor=actor, action="strategy.activate", status="ok", payload=strategy_id)
-        return strategy
+        with self._lock:
+            strategy = self._strategies.get(strategy_id)
+            if strategy is None:
+                raise StrategyNotFoundError("strategy_not_found")
+            self._active_strategy_id = strategy_id
+            self._persist_runtime_state()
+            self._add_audit(
+                actor=actor,
+                action="strategy.activate",
+                status="ok",
+                payload=strategy_id,
+            )
+            return strategy
 
     def refresh_candidates(self, *, force: bool = False) -> None:
         if not force and self._is_cache_fresh():
@@ -710,12 +724,14 @@ class BrandStudioService:
         )
 
     def queue_items(self) -> list[PublishQueueItem]:
-        items = list(self._queue.values())
-        items.sort(key=lambda it: it.created_at, reverse=True)
-        return items
+        with self._lock:
+            items = list(self._queue.values())
+            items.sort(key=lambda it: it.created_at, reverse=True)
+            return items
 
     def audit_items(self) -> list[BrandStudioAuditEntry]:
-        return list(reversed(self._audit))
+        with self._lock:
+            return list(reversed(self._audit))
 
     def integrations(self) -> list[IntegrationDescriptor]:
         strategy = self._active_strategy()
@@ -830,6 +846,7 @@ class BrandStudioService:
                     success = True
                     message = "Token present (manual publish in MVP)"
         except Exception as exc:
+            logger.exception("Brand Studio integration test failed [%s]", integration_id)
             status = "invalid"
             message = f"Integration test failed: {exc}"
 
@@ -850,18 +867,19 @@ class BrandStudioService:
         )
 
     def _add_audit(self, *, actor: str, action: str, status: str, payload: str) -> None:
-        payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        self._audit.append(
-            BrandStudioAuditEntry(
-                id=f"audit-{uuid4().hex[:10]}",
-                actor=actor,
-                action=action,
-                status=status,
-                payload_hash=payload_hash,
-                timestamp=_utcnow(),
+        with self._lock:
+            payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            self._audit.append(
+                BrandStudioAuditEntry(
+                    id=f"audit-{uuid4().hex[:10]}",
+                    actor=actor,
+                    action=action,
+                    status=status,
+                    payload_hash=payload_hash,
+                    timestamp=_utcnow(),
+                )
             )
-        )
-        self._persist_runtime_state()
+            self._persist_runtime_state()
 
 
 _service = BrandStudioService()

@@ -414,6 +414,10 @@ export default function BrandStudioPage() {
   );
 
   const saveConfig = useCallback(async () => {
+    if (selectedStrategyId !== activeStrategyId) {
+      setConfigError("Save updates only the active strategy. Activate selected strategy first.");
+      return;
+    }
     setConfigLoading(true);
     setConfigError(null);
     try {
@@ -445,7 +449,7 @@ export default function BrandStudioPage() {
     } finally {
       setConfigLoading(false);
     }
-  }, [configForm, loadAudit, loadCandidates, loadConfig]);
+  }, [activeStrategyId, configForm, loadAudit, loadCandidates, loadConfig, selectedStrategyId]);
 
   const saveStrategy = useCallback(async () => {
     if (!configForm.id) {
@@ -653,8 +657,13 @@ export default function BrandStudioPage() {
   );
 
   const toggleChannel = (value: "x" | "github" | "blog") => {
+    setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.active_channels.includes(value);
+      if (exists && previous.active_channels.length === 1) {
+        setConfigError("At least one channel must remain selected.");
+        return previous;
+      }
       const next = exists
         ? previous.active_channels.filter((item) => item !== value)
         : [...previous.active_channels, value];
@@ -663,8 +672,13 @@ export default function BrandStudioPage() {
   };
 
   const toggleLanguage = (value: "pl" | "en") => {
+    setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.draft_languages.includes(value);
+      if (exists && previous.draft_languages.length === 1) {
+        setConfigError("At least one language must remain selected.");
+        return previous;
+      }
       const next = exists
         ? previous.draft_languages.filter((item) => item !== value)
         : [...previous.draft_languages, value];
@@ -1063,13 +1077,23 @@ export default function BrandStudioPage() {
           </div>
 
           {configError ? <p className="text-rose-300">{configError}</p> : null}
+          {selectedStrategyId !== activeStrategyId ? (
+            <p className="text-xs text-amber-300">
+              Save applies to active strategy only. Activate selected strategy first.
+            </p>
+          ) : null}
 
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => void saveConfig()}
-              disabled={configLoading}
+              disabled={configLoading || selectedStrategyId !== activeStrategyId}
               className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-100 disabled:opacity-50"
+              title={
+                selectedStrategyId !== activeStrategyId
+                  ? "Save updates only active strategy"
+                  : undefined
+              }
             >
               {t("config.save")}
             </button>
