@@ -160,6 +160,14 @@ type ChannelAccount = {
   is_default: boolean;
   secret_status: "configured" | "missing" | "invalid";
   capabilities: string[];
+  last_tested_at?: string | null;
+  last_test_status?: "configured" | "missing" | "invalid" | null;
+  last_test_message?: string | null;
+  successful_publishes: number;
+  failed_publishes: number;
+  last_published_at?: string | null;
+  last_publish_status?: "published" | "failed" | null;
+  last_publish_message?: string | null;
 };
 
 type ChannelAccountsResponse = {
@@ -1598,6 +1606,20 @@ export default function BrandStudioPage() {
                       </div>
                       <p className="mt-1 text-xs text-zinc-400">
                         {t("accounts.target")}: {account.target || "-"}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Health: {account.last_test_status ?? account.secret_status}
+                        {account.last_tested_at ? ` @ ${new Date(account.last_tested_at).toLocaleString()}` : ""}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Publish: ok={account.successful_publishes} / fail={account.failed_publishes}
+                        {account.last_publish_status
+                          ? ` (last: ${account.last_publish_status}${
+                              account.last_published_at
+                                ? ` @ ${new Date(account.last_published_at).toLocaleString()}`
+                                : ""
+                            })`
+                          : ""}
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
                         <button

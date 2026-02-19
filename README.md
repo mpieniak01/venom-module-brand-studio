@@ -75,12 +75,18 @@ BRAND_STUDIO_ALLOWED_USERS=
 BRAND_STUDIO_DISCOVERY_MODE=hybrid
 BRAND_STUDIO_RSS_URLS=https://example.org/feed.xml,https://example.org/another-feed.xml
 BRAND_STUDIO_CACHE_TTL_SECONDS=1800
-BRAND_STUDIO_CACHE_FILE=/tmp/venom-brand-studio/candidates-cache.json
-BRAND_STUDIO_STATE_FILE=/tmp/venom-brand-studio/runtime-state.json
-GITHUB_TOKEN_BRAND=<token>
-BRAND_TARGET_REPO=mpieniak01/mpieniak01
-BRAND_GITHUB_PUBLISH_MODE=commit
-BRAND_GITHUB_BASE_BRANCH=main
+    BRAND_STUDIO_CACHE_FILE=/tmp/venom-brand-studio/candidates-cache.json
+    BRAND_STUDIO_STATE_FILE=/tmp/venom-brand-studio/runtime-state.json
+    BRAND_STUDIO_ACCOUNTS_FILE=/tmp/venom-brand-studio/accounts-state.json
+    GITHUB_TOKEN_BRAND=<token>
+    BRAND_TARGET_REPO=mpieniak01/mpieniak01
+    BRAND_GITHUB_PUBLISH_MODE=commit
+    BRAND_GITHUB_BASE_BRANCH=main
+    DEVTO_API_KEY=<token>
+    REDDIT_CLIENT_ID=<client-id>
+    REDDIT_CLIENT_SECRET=<client-secret>
+    REDDIT_REFRESH_TOKEN=<refresh-token>
+    REDDIT_USER_AGENT=venom-brand-studio/1.0 by /u/your-account
 ```
 
 After changing env values, restart Venom services.
@@ -99,6 +105,14 @@ After changing env values, restart Venom services.
 ### Runtime state persistence
 1. Queue and audit are persisted in `BRAND_STUDIO_STATE_FILE`.
 2. After backend restart, queue and audit entries are restored from local state file.
+3. Channel accounts and account telemetry are persisted in `BRAND_STUDIO_ACCOUNTS_FILE`.
+
+### Channel capability matrix (161_C)
+1. `github` / `blog`: real publish connector.
+2. `devto`: real publish connector.
+3. `reddit`: real publish connector (OAuth refresh token flow).
+4. `x`: manual publish marker in MVP.
+5. `linkedin`, `medium`, `hf_blog`, `hf_spaces`, `hashnode`: account + test/status available, publish connector planned.
 
 ## CI
 - GitHub Actions workflow: `.github/workflows/ci.yml`

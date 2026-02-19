@@ -38,6 +38,7 @@ from venom_module_brand_studio.api.schemas import (
 )
 from venom_module_brand_studio.connectors.devto import DevtoPublisher
 from venom_module_brand_studio.connectors.github import GitHubPublisher
+from venom_module_brand_studio.connectors.reddit import RedditPublisher
 from venom_module_brand_studio.connectors.sources import (
     fetch_arxiv_items,
     fetch_github_items,
@@ -72,14 +73,13 @@ SUPPORTED_CHANNELS: tuple[ChannelId, ...] = (
     "devto",
     "hashnode",
 )
-REAL_PUBLISH_CHANNELS: tuple[ChannelId, ...] = ("github", "blog", "devto")
+REAL_PUBLISH_CHANNELS: tuple[ChannelId, ...] = ("github", "blog", "devto", "reddit")
 MANUAL_PUBLISH_CHANNELS: tuple[ChannelId, ...] = ("x",)
 PLANNED_PUBLISH_CHANNELS: tuple[ChannelId, ...] = (
     "linkedin",
     "medium",
     "hf_blog",
     "hf_spaces",
-    "reddit",
     "hashnode",
 )
 
@@ -259,6 +259,7 @@ class BrandStudioService:
         self._audit: list[BrandStudioAuditEntry] = []
         self._publisher = GitHubPublisher.from_env()
         self._devto_publisher = DevtoPublisher.from_env()
+        self._reddit_publisher = RedditPublisher.from_env()
         self._cache_file = self._resolve_cache_file()
         self._state_file = self._resolve_state_file()
         self._accounts_file = self._resolve_accounts_file()
@@ -488,7 +489,12 @@ class BrandStudioService:
         if channel == "reddit":
             client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
             client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
-            return "configured" if client_id and client_secret else "missing"
+            refresh_token = (os.getenv("REDDIT_REFRESH_TOKEN") or "").strip()
+            if client_id and client_secret and refresh_token:
+                return "configured"
+            if client_id or client_secret or refresh_token:
+                return "invalid"
+            return "missing"
         if channel == "devto":
             return "configured" if (os.getenv("DEVTO_API_KEY") or "").strip() else "missing"
         if channel == "hashnode":
@@ -846,9 +852,24 @@ class BrandStudioService:
                     status = "invalid"
                     success = False
                     message = f"Dev.to test failed: {exc}"
+            if channel == "reddit" and success and self._reddit_publisher is not None:
+                try:
+                    self._reddit_publisher.validate_connection()
+                    message = "Reddit API reachable for account"
+                except Exception as exc:
+                    status = "invalid"
+                    success = False
+                    message = f"Reddit test failed: {exc}"
 
             tested_at = _utcnow()
-            current[account_id] = account.model_copy(update={"secret_status": status})
+            current[account_id] = account.model_copy(
+                update={
+                    "secret_status": status,
+                    "last_tested_at": tested_at,
+                    "last_test_status": status,
+                    "last_test_message": message,
+                }
+            )
             self._persist_accounts_state()
             self._add_audit(
                 actor=actor,
@@ -864,6 +885,32 @@ class BrandStudioService:
                 tested_at=tested_at,
                 message=message,
             )
+
+    def _record_account_publish_result(
+        self,
+        *,
+        item: PublishQueueItem,
+        status: str,
+        message: str,
+        published_at: datetime,
+    ) -> None:
+        if not item.account_id or item.target_channel not in SUPPORTED_CHANNELS:
+            return
+        channel_accounts = self._accounts.get(item.target_channel, {})
+        account = channel_accounts.get(item.account_id)
+        if account is None:
+            return
+        updates: dict[str, object] = {
+            "last_published_at": published_at,
+            "last_publish_status": "published" if status == "published" else "failed",
+            "last_publish_message": message,
+        }
+        if status == "published":
+            updates["successful_publishes"] = account.successful_publishes + 1
+        else:
+            updates["failed_publishes"] = account.failed_publishes + 1
+        channel_accounts[item.account_id] = account.model_copy(update=updates)
+        self._persist_accounts_state()
 
     def refresh_candidates(self, *, force: bool = False) -> None:
         if not force and self._is_cache_fresh():
@@ -1090,6 +1137,12 @@ class BrandStudioService:
                         status="failed",
                         payload=f"{item_id}:github_not_configured",
                     )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="failed",
+                        message="GitHub publisher not configured",
+                        published_at=now,
+                    )
                     return PublishResult(
                         success=False,
                         status="failed",
@@ -1114,6 +1167,12 @@ class BrandStudioService:
                         status="published",
                         payload=item_id,
                     )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="published",
+                        message=result.message,
+                        published_at=now,
+                    )
                     return PublishResult(
                         success=True,
                         status="published",
@@ -1132,6 +1191,12 @@ class BrandStudioService:
                         status="failed",
                         payload=f"{item_id}:{exc}",
                     )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="failed",
+                        message=f"GitHub publish failed: {exc}",
+                        published_at=now,
+                    )
                     return PublishResult(
                         success=False,
                         status="failed",
@@ -1149,6 +1214,12 @@ class BrandStudioService:
                         action="queue.publish",
                         status="failed",
                         payload=f"{item_id}:devto_not_configured",
+                    )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="failed",
+                        message="Dev.to publisher not configured",
+                        published_at=now,
                     )
                     return PublishResult(
                         success=False,
@@ -1171,6 +1242,12 @@ class BrandStudioService:
                         status="published",
                         payload=item_id,
                     )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="published",
+                        message=publish_result.message,
+                        published_at=now,
+                    )
                     return PublishResult(
                         success=True,
                         status="published",
@@ -1189,11 +1266,95 @@ class BrandStudioService:
                         status="failed",
                         payload=f"{item_id}:{exc}",
                     )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="failed",
+                        message=f"Dev.to publish failed: {exc}",
+                        published_at=now,
+                    )
                     return PublishResult(
                         success=False,
                         status="failed",
                         published_at=now,
                         message=f"Dev.to publish failed: {exc}",
+                    )
+
+            if item.target_channel == "reddit":
+                if self._reddit_publisher is None:
+                    item.status = "failed"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="failed",
+                        payload=f"{item_id}:reddit_not_configured",
+                    )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="failed",
+                        message="Reddit publisher not configured",
+                        published_at=now,
+                    )
+                    return PublishResult(
+                        success=False,
+                        status="failed",
+                        published_at=now,
+                        message=(
+                            "Reddit publisher not configured "
+                            "(set REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_REFRESH_TOKEN)"
+                        ),
+                    )
+                try:
+                    publish_result = self._reddit_publisher.publish_markdown(
+                        title=f"{item.target_channel}-{item.item_id}",
+                        content=item.payload,
+                        subreddit=item.target_repo,
+                    )
+                    item.status = "published"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="published",
+                        payload=item_id,
+                    )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="published",
+                        message=publish_result.message,
+                        published_at=now,
+                    )
+                    return PublishResult(
+                        success=True,
+                        status="published",
+                        published_at=now,
+                        external_id=publish_result.external_id,
+                        url=publish_result.url,
+                        message=publish_result.message,
+                    )
+                except Exception as exc:
+                    item.status = "failed"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="failed",
+                        payload=f"{item_id}:{exc}",
+                    )
+                    self._record_account_publish_result(
+                        item=item,
+                        status="failed",
+                        message=f"Reddit publish failed: {exc}",
+                        published_at=now,
+                    )
+                    return PublishResult(
+                        success=False,
+                        status="failed",
+                        published_at=now,
+                        message=f"Reddit publish failed: {exc}",
                     )
 
             if item.target_channel == "x":
@@ -1205,6 +1366,12 @@ class BrandStudioService:
                     action="queue.publish",
                     status="manual",
                     payload=f"{item_id}:{item.target_channel}",
+                )
+                self._record_account_publish_result(
+                    item=item,
+                    status="published",
+                    message="X publish marked as manual-complete in MVP",
+                    published_at=now,
                 )
                 return PublishResult(
                     success=True,
@@ -1222,6 +1389,12 @@ class BrandStudioService:
                 action="queue.publish",
                 status="failed",
                 payload=f"{item_id}:{item.target_channel}_connector_not_implemented",
+            )
+            self._record_account_publish_result(
+                item=item,
+                status="failed",
+                message=f"Connector for channel '{item.target_channel}' is not implemented yet",
+                published_at=now,
             )
             return PublishResult(
                 success=False,
@@ -1248,6 +1421,7 @@ class BrandStudioService:
         devto_key = (os.getenv("DEVTO_API_KEY") or "").strip()
         reddit_client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
         reddit_client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
+        reddit_refresh_token = (os.getenv("REDDIT_REFRESH_TOKEN") or "").strip()
         hashnode_token = (os.getenv("HASHNODE_TOKEN") or "").strip()
         linkedin_token = (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip()
         medium_token = (os.getenv("MEDIUM_TOKEN") or "").strip()
@@ -1324,17 +1498,26 @@ class BrandStudioService:
                 name="Reddit publish",
                 requires_key=True,
                 status=(
-                    "invalid"
-                    if reddit_client_id and reddit_client_secret
-                    else "missing"
+                    "configured"
+                    if self._reddit_publisher is not None
+                    else (
+                        "invalid"
+                        if reddit_client_id or reddit_client_secret or reddit_refresh_token
+                        else "missing"
+                    )
                 ),
                 details=(
-                    "Credentials present, connector not implemented yet"
-                    if reddit_client_id and reddit_client_secret
-                    else "Missing REDDIT_CLIENT_ID or REDDIT_CLIENT_SECRET"
+                    "Reddit connector ready"
+                    if self._reddit_publisher is not None
+                    else (
+                        "Incomplete Reddit credentials "
+                        "(required: REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_REFRESH_TOKEN)"
+                        if reddit_client_id or reddit_client_secret or reddit_refresh_token
+                        else "Missing REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/REDDIT_REFRESH_TOKEN"
+                    )
                 ),
-                key_hint="REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET",
-                masked_secret=_masked_secret(reddit_client_secret),
+                key_hint="REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/REDDIT_REFRESH_TOKEN",
+                masked_secret=_masked_secret(reddit_refresh_token or reddit_client_secret),
             ),
             IntegrationDescriptor(
                 id="hashnode_publish",
@@ -1464,15 +1647,29 @@ class BrandStudioService:
                     success = True
                     message = "Dev.to API reachable"
             elif integration_id == "reddit_publish":
-                client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
-                client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
-                if client_id and client_secret:
-                    status = "invalid"
-                    success = False
-                    message = "Credentials present, connector not implemented yet"
+                if self._reddit_publisher is None:
+                    client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
+                    client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
+                    refresh_token = (os.getenv("REDDIT_REFRESH_TOKEN") or "").strip()
+                    if client_id or client_secret or refresh_token:
+                        status = "invalid"
+                        success = False
+                        message = (
+                            "Incomplete Reddit credentials "
+                            "(required: REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, "
+                            "REDDIT_REFRESH_TOKEN)"
+                        )
+                    else:
+                        status = "missing"
+                        message = (
+                            "Missing REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET/"
+                            "REDDIT_REFRESH_TOKEN"
+                        )
                 else:
-                    status = "missing"
-                    message = "Missing REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"
+                    self._reddit_publisher.validate_connection()
+                    status = "configured"
+                    success = True
+                    message = "Reddit API reachable"
             elif integration_id == "hashnode_publish":
                 token = (os.getenv("HASHNODE_TOKEN") or "").strip()
                 if token:

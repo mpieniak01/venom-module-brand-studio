@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from venom_module_brand_studio.connectors import devto, github, sources
+from venom_module_brand_studio.connectors import devto, github, reddit, sources
 from venom_module_brand_studio.connectors.devto import DevtoPublisher, _normalize_devto_target
 from venom_module_brand_studio.connectors.github import GitHubPublisher
+from venom_module_brand_studio.connectors.reddit import RedditPublisher, _normalize_subreddit
 
 
 def test_github_publisher_from_env(monkeypatch) -> None:
@@ -194,3 +195,73 @@ def test_normalize_devto_target() -> None:
     assert _normalize_devto_target(" user-name ") == "user-name"
     assert _normalize_devto_target("/org_name/team/") == "org_name/team"
     assert _normalize_devto_target("https://evil.example/x") is None
+
+
+def test_reddit_publisher_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("REDDIT_REFRESH_TOKEN", raising=False)
+    assert RedditPublisher.from_env() is None
+
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("REDDIT_REFRESH_TOKEN", "refresh")
+    publisher = RedditPublisher.from_env()
+    assert publisher is not None
+    assert publisher.client_id == "id"
+
+
+def test_reddit_validate_connection(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_request_json(method: str, url: str, *, headers=None, form=None, payload=None):  # noqa: ANN001
+        calls.append((method, url))
+        if "access_token" in url:
+            assert form is not None
+            return {"access_token": "token"}
+        assert headers is not None
+        assert headers["Authorization"] == "bearer token"
+        return {"name": "brand-user"}
+
+    monkeypatch.setattr(reddit, "_request_json", fake_request_json)
+    publisher = RedditPublisher(
+        client_id="id",
+        client_secret="secret",
+        refresh_token="refresh",
+        user_agent="ua",
+    )
+    assert publisher.validate_connection() is True
+    assert calls[0][1].endswith("/api/v1/access_token")
+    assert calls[1][1].endswith("/api/v1/me")
+
+
+def test_reddit_publish_markdown(monkeypatch) -> None:
+    def fake_request_json(method: str, url: str, *, headers=None, form=None, payload=None):  # noqa: ANN001
+        if "access_token" in url:
+            return {"access_token": "token"}
+        if "/api/submit" in url:
+            assert form is not None
+            assert form["sr"] == "python"
+            return {"json": {"data": {"name": "t3_abc", "url": "https://reddit.com/r/python/comments/abc"}}}
+        raise AssertionError(f"Unexpected call {method} {url}")
+
+    monkeypatch.setattr(reddit, "_request_json", fake_request_json)
+    publisher = RedditPublisher(
+        client_id="id",
+        client_secret="secret",
+        refresh_token="refresh",
+        user_agent="ua",
+    )
+    result = publisher.publish_markdown(
+        title="Title",
+        content="Body",
+        subreddit="r/python",
+    )
+    assert result.external_id == "t3_abc"
+    assert result.url == "https://reddit.com/r/python/comments/abc"
+
+
+def test_normalize_subreddit() -> None:
+    assert _normalize_subreddit("r/Python") == "python"
+    assert _normalize_subreddit("python_ai") == "python_ai"
+    assert _normalize_subreddit("https://reddit.com/r/python") is None

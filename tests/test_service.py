@@ -385,6 +385,9 @@ def test_channel_accounts_lifecycle_and_queue_binding(monkeypatch, tmp_path: Pat
     test_result = service.test_channel_account("devto", created.account_id, actor="tester")
     assert test_result.account_id == created.account_id
     assert test_result.status in {"missing", "configured", "invalid"}
+    refreshed_after_test = service.channel_accounts("devto").items[0]
+    assert refreshed_after_test.last_tested_at is not None
+    assert refreshed_after_test.last_test_status == test_result.status
 
     items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
     draft = service.generate_draft(
@@ -500,9 +503,12 @@ def test_publish_devto_channel_with_connector(monkeypatch, tmp_path: Path) -> No
     assert result.success is True
     assert result.status == "published"
     assert result.external_id == "devto-42"
+    refreshed = service.channel_accounts("devto").items[0]
+    assert refreshed.successful_publishes == 1
+    assert refreshed.last_publish_status == "published"
 
 
-def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) -> None:
+def test_publish_reddit_channel_with_connector(monkeypatch, tmp_path: Path) -> None:
     state_file = tmp_path / "runtime-state.json"
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
@@ -512,6 +518,7 @@ def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) 
     monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
     monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
     monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("REDDIT_REFRESH_TOKEN", "refresh")
 
     service = BrandStudioService()
     account = service.create_channel_account(
@@ -534,6 +541,73 @@ def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) 
     queue_item = service.queue_draft(
         draft_id=draft.draft_id,
         target_channel="reddit",
+        target_language="en",
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=account.account_id,
+    )
+    class FakeRedditPublisher:
+        def publish_markdown(self, *, title: str, content: str, subreddit: str | None = None):  # noqa: ANN001
+            assert title
+            assert content
+            assert subreddit == "r/python"
+
+            class Result:
+                external_id = "t3_abc"
+                url = "https://reddit.com/r/python/comments/abc"
+                message = "Published to Reddit r/python"
+
+            return Result()
+
+        def validate_connection(self):  # noqa: ANN201
+            return True
+
+    service._reddit_publisher = FakeRedditPublisher()  # type: ignore[attr-defined]
+    result = service.publish_queue_item(
+        item_id=queue_item.item_id,
+        confirm_publish=True,
+        actor="tester",
+    )
+    assert result.success is True
+    assert result.status == "published"
+    assert result.external_id == "t3_abc"
+    refreshed = service.channel_accounts("reddit").items[0]
+    assert refreshed.successful_publishes == 1
+    assert refreshed.failed_publishes == 0
+
+
+def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    accounts_file = tmp_path / "accounts-state.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+
+    service = BrandStudioService()
+    account = service.create_channel_account(
+        "hashnode",
+        ChannelAccountCreateRequest(
+            display_name="Hashnode account",
+            target="my-publication",
+            is_default=True,
+        ),
+        actor="tester",
+    )
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["hashnode"],
+        languages=["en"],
+        tone="expert",
+        actor="tester",
+    )
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="hashnode",
         target_language="en",
         target_repo=None,
         target_path=None,

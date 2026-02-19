@@ -246,6 +246,14 @@ class ChannelAccount(BaseModel):
     is_default: bool = False
     secret_status: IntegrationStatus = "missing"
     capabilities: list[str] = Field(default_factory=list)
+    last_tested_at: datetime | None = None
+    last_test_status: IntegrationStatus | None = None
+    last_test_message: str | None = None
+    successful_publishes: int = 0
+    failed_publishes: int = 0
+    last_published_at: datetime | None = None
+    last_publish_status: Literal["published", "failed"] | None = None
+    last_publish_message: str | None = None
 
 
 class ChannelAccountCreateRequest(BaseModel):

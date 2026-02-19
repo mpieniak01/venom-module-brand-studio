@@ -212,6 +212,12 @@ def test_401_for_mutating_endpoint_without_actor_header() -> None:
     )
     assert response.status_code == 401
 
+    account_response = client.post(
+        "/api/v1/brand-studio/channels/devto/accounts",
+        json={"display_name": "No auth account"},
+    )
+    assert account_response.status_code == 401
+
 
 def test_403_when_feature_disabled(monkeypatch) -> None:
     monkeypatch.setenv("FEATURE_BRAND_STUDIO", "false")
@@ -227,6 +233,23 @@ def test_403_when_actor_not_in_allowlist(monkeypatch) -> None:
         "/api/v1/brand-studio/drafts/generate",
         json={"candidate_id": "cand-1", "channels": ["x"], "languages": ["pl"]},
         headers={"X-Authenticated-User": "blocked-user", "X-Autonomy-Level": "20"},
+    )
+    assert response.status_code == 403
+
+    account_response = client.post(
+        "/api/v1/brand-studio/channels/devto/accounts",
+        json={"display_name": "Blocked account"},
+        headers={"X-Authenticated-User": "blocked-user", "X-Autonomy-Level": "20"},
+    )
+    assert account_response.status_code == 403
+
+
+def test_403_for_mutating_account_endpoint_when_autonomy_too_low() -> None:
+    client = build_client()
+    response = client.post(
+        "/api/v1/brand-studio/channels/devto/accounts",
+        json={"display_name": "Low autonomy account"},
+        headers={"X-Authenticated-User": "mpieniak", "X-Autonomy-Level": "5"},
     )
     assert response.status_code == 403
 
