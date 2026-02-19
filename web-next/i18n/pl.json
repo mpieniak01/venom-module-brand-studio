@@ -15,5 +15,18 @@
   "stats.freshest": "Najświeższy",
   "list.empty": "Brak okazji dla aktualnych filtrów.",
   "list.ageMinutes": "Wiek",
-  "list.reasons": "Powody"
+  "list.reasons": "Powody",
+  "drafts.title": "Drafty",
+  "drafts.candidate": "Wybrany kandydat",
+  "drafts.generate": "Generuj drafty",
+  "drafts.generating": "Generowanie...",
+  "drafts.queue": "Do kolejki",
+  "queue.title": "Kolejka publikacji",
+  "queue.loading": "Ładowanie kolejki...",
+  "queue.empty": "Kolejka jest pusta.",
+  "queue.publishNow": "Publikuj teraz",
+  "queue.published": "Opublikowano",
+  "audit.title": "Audyt",
+  "audit.loading": "Ładowanie audytu...",
+  "audit.empty": "Brak wpisów audytu."
 }

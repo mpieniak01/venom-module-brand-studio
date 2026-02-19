@@ -15,5 +15,18 @@
   "stats.freshest": "Aktuellster",
   "list.empty": "Keine Opportunities für die aktuellen Filter.",
   "list.ageMinutes": "Alter",
-  "list.reasons": "Gründe"
+  "list.reasons": "Gründe",
+  "drafts.title": "Entwürfe",
+  "drafts.candidate": "Ausgewählter Kandidat",
+  "drafts.generate": "Entwürfe erstellen",
+  "drafts.generating": "Wird erstellt...",
+  "drafts.queue": "In Warteschlange",
+  "queue.title": "Publish-Warteschlange",
+  "queue.loading": "Warteschlange wird geladen...",
+  "queue.empty": "Warteschlange ist leer.",
+  "queue.publishNow": "Jetzt veröffentlichen",
+  "queue.published": "Veröffentlicht",
+  "audit.title": "Audit",
+  "audit.loading": "Audit wird geladen...",
+  "audit.empty": "Noch keine Audit-Einträge."
 }

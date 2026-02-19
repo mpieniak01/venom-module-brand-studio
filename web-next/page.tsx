@@ -27,6 +27,46 @@ type CandidatesResponse = {
   items: Candidate[];
 };
 
+type DraftVariant = {
+  channel: "x" | "github" | "blog";
+  language: "pl" | "en";
+  content: string;
+};
+
+type DraftBundle = {
+  draft_id: string;
+  candidate_id: string;
+  variants: DraftVariant[];
+};
+
+type QueueItem = {
+  item_id: string;
+  draft_id: string;
+  target_channel: "x" | "github" | "blog";
+  status: "draft" | "ready" | "queued" | "published" | "failed" | "cancelled";
+  created_at: string;
+  updated_at: string;
+};
+
+type QueueResponse = {
+  count: number;
+  items: QueueItem[];
+};
+
+type AuditItem = {
+  id: string;
+  actor: string;
+  action: string;
+  status: string;
+  payload_hash: string;
+  timestamp: string;
+};
+
+type AuditResponse = {
+  count: number;
+  items: AuditItem[];
+};
+
 const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
 export default function BrandStudioPage() {
@@ -37,6 +77,16 @@ export default function BrandStudioPage() {
   const [items, setItems] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string>("");
+  const [draft, setDraft] = useState<DraftBundle | null>(null);
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [audit, setAudit] = useState<AuditItem[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
 
   useEffect(() => {
     const raw = (typeof navigator !== "undefined" ? navigator.language : "en").toLowerCase();
@@ -80,16 +130,58 @@ export default function BrandStudioPage() {
       }
       const payload = (await response.json()) as CandidatesResponse;
       setItems(payload.items);
+      if (payload.items.length && !selectedCandidateId) {
+        setSelectedCandidateId(payload.items[0].id);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "unknown_error");
     } finally {
       setLoading(false);
     }
-  }, [apiLang, channel, minScore]);
+  }, [apiLang, channel, minScore, selectedCandidateId]);
+
+  const loadQueue = useCallback(async () => {
+    setQueueLoading(true);
+    setQueueError(null);
+    try {
+      const response = await fetch("/api/v1/brand-studio/queue", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as QueueResponse;
+      setQueue(payload.items);
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setQueueLoading(false);
+    }
+  }, []);
+
+  const loadAudit = useCallback(async () => {
+    setAuditLoading(true);
+    setAuditError(null);
+    try {
+      const response = await fetch("/api/v1/brand-studio/audit", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as AuditResponse;
+      setAudit(payload.items);
+    } catch (err) {
+      setAuditError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setAuditLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     void loadCandidates();
   }, [loadCandidates]);
+
+  useEffect(() => {
+    void loadQueue();
+    void loadAudit();
+  }, [loadQueue, loadAudit]);
 
   const stats = useMemo(() => {
     if (!items.length) {
@@ -99,6 +191,100 @@ export default function BrandStudioPage() {
     const freshestMinutes = Math.min(...items.map((item) => item.age_minutes));
     return { count: items.length, topScore, freshest: `${freshestMinutes}m` };
   }, [items]);
+
+  const generateDraft = useCallback(async () => {
+    if (!selectedCandidateId) {
+      return;
+    }
+    setDraftLoading(true);
+    setDraftError(null);
+    try {
+      const selectedChannels =
+        channel === "all" ? (["x", "github", "blog"] as const) : ([channel] as const);
+      const selectedLanguages =
+        apiLang === "pl" || apiLang === "en" ? ([apiLang] as const) : (["pl", "en"] as const);
+      const response = await fetch("/api/v1/brand-studio/drafts/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Authenticated-User": "local-user",
+        },
+        body: JSON.stringify({
+          candidate_id: selectedCandidateId,
+          channels: selectedChannels,
+          languages: selectedLanguages,
+          tone: "expert",
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as DraftBundle;
+      setDraft(payload);
+      void loadAudit();
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setDraftLoading(false);
+    }
+  }, [apiLang, channel, loadAudit, selectedCandidateId]);
+
+  const queueVariant = useCallback(
+    async (variant: DraftVariant) => {
+      if (!draft) {
+        return;
+      }
+      setQueueLoading(true);
+      setQueueError(null);
+      try {
+        const response = await fetch(`/api/v1/brand-studio/drafts/${draft.draft_id}/queue`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Authenticated-User": "local-user",
+          },
+          body: JSON.stringify({
+            target_channel: variant.channel,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await loadQueue();
+        await loadAudit();
+      } catch (err) {
+        setQueueError(err instanceof Error ? err.message : "unknown_error");
+        setQueueLoading(false);
+      }
+    },
+    [draft, loadAudit, loadQueue]
+  );
+
+  const publishNow = useCallback(
+    async (itemId: string) => {
+      setQueueLoading(true);
+      setQueueError(null);
+      try {
+        const response = await fetch(`/api/v1/brand-studio/queue/${itemId}/publish`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Authenticated-User": "local-user",
+          },
+          body: JSON.stringify({ confirm_publish: true }),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await loadQueue();
+        await loadAudit();
+      } catch (err) {
+        setQueueError(err instanceof Error ? err.message : "unknown_error");
+        setQueueLoading(false);
+      }
+    },
+    [loadAudit, loadQueue]
+  );
 
   return (
     <div className="space-y-6">
@@ -214,6 +400,97 @@ export default function BrandStudioPage() {
             ))}
           </div>
         ) : null}
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-3">
+        <div className="glass-panel space-y-3 rounded-2xl border border-emerald-500/20 p-4">
+          <h2 className="text-lg font-medium text-emerald-100">{t("drafts.title")}</h2>
+          <label className="space-y-1">
+            <span className="text-xs uppercase text-zinc-400">{t("drafts.candidate")}</span>
+            <select
+              value={selectedCandidateId}
+              onChange={(event) => setSelectedCandidateId(event.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+            >
+              {items.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.topic}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => void generateDraft()}
+            disabled={draftLoading || !selectedCandidateId}
+            className="rounded-xl border border-emerald-500/30 px-4 py-2 text-sm text-emerald-100 transition hover:border-emerald-400 disabled:opacity-50"
+          >
+            {draftLoading ? t("drafts.generating") : t("drafts.generate")}
+          </button>
+          {draftError ? <p className="text-rose-300">{draftError}</p> : null}
+          {draft ? (
+            <div className="space-y-2">
+              {draft.variants.map((variant, index) => (
+                <article key={`${variant.channel}-${variant.language}-${index}`} className="rounded-lg border border-zinc-800 p-3">
+                  <p className="text-xs uppercase text-zinc-400">
+                    {variant.channel} / {variant.language}
+                  </p>
+                  <p className="mt-1 text-sm text-zinc-200">{variant.content}</p>
+                  <button
+                    type="button"
+                    onClick={() => void queueVariant(variant)}
+                    className="mt-2 rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                  >
+                    {t("drafts.queue")}
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
+          <h2 className="text-lg font-medium text-violet-100">{t("queue.title")}</h2>
+          {queueLoading ? <p className="text-zinc-400">{t("queue.loading")}</p> : null}
+          {queueError ? <p className="text-rose-300">{queueError}</p> : null}
+          {!queueLoading && !queue.length ? <p className="text-zinc-400">{t("queue.empty")}</p> : null}
+          <div className="space-y-2">
+            {queue.map((item) => (
+              <article key={item.item_id} className="rounded-lg border border-zinc-800 p-3">
+                <p className="text-xs uppercase text-zinc-400">
+                  {item.target_channel} / {item.status}
+                </p>
+                <p className="text-xs text-zinc-500">{item.item_id}</p>
+                <button
+                  type="button"
+                  onClick={() => void publishNow(item.item_id)}
+                  disabled={item.status === "published" || queueLoading}
+                  className="mt-2 rounded-lg border border-violet-500/30 px-3 py-1 text-xs text-violet-100 hover:border-violet-400 disabled:opacity-50"
+                >
+                  {item.status === "published" ? t("queue.published") : t("queue.publishNow")}
+                </button>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="glass-panel space-y-3 rounded-2xl border border-cyan-500/20 p-4">
+          <h2 className="text-lg font-medium text-cyan-100">{t("audit.title")}</h2>
+          {auditLoading ? <p className="text-zinc-400">{t("audit.loading")}</p> : null}
+          {auditError ? <p className="text-rose-300">{auditError}</p> : null}
+          {!auditLoading && !audit.length ? <p className="text-zinc-400">{t("audit.empty")}</p> : null}
+          <div className="space-y-2">
+            {audit.slice(0, 8).map((entry) => (
+              <article key={entry.id} className="rounded-lg border border-zinc-800 p-3">
+                <p className="text-xs uppercase text-zinc-400">
+                  {entry.action} / {entry.status}
+                </p>
+                <p className="text-xs text-zinc-500">{entry.actor}</p>
+                <p className="text-xs text-zinc-500">{new Date(entry.timestamp).toLocaleString()}</p>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
     </div>
   );
