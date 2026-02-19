@@ -1,9 +1,22 @@
+from pathlib import Path
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from venom_module_brand_studio.api.routes import router
+from venom_module_brand_studio.services import service as service_module
 
 AUTH_HEADERS = {"X-Authenticated-User": "mpieniak", "X-Autonomy-Level": "20"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FEATURE_BRAND_STUDIO", "true")
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    service_module._service = service_module.BrandStudioService()
 
 
 def build_client() -> TestClient:
