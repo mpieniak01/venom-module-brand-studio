@@ -36,6 +36,7 @@ from venom_module_brand_studio.api.schemas import (
     StrategyCreateRequest,
     StrategyUpdateRequest,
 )
+from venom_module_brand_studio.connectors.devto import DevtoPublisher
 from venom_module_brand_studio.connectors.github import GitHubPublisher
 from venom_module_brand_studio.connectors.sources import (
     fetch_arxiv_items,
@@ -247,6 +248,7 @@ class BrandStudioService:
         self._queue: dict[str, PublishQueueItem] = {}
         self._audit: list[BrandStudioAuditEntry] = []
         self._publisher = GitHubPublisher.from_env()
+        self._devto_publisher = DevtoPublisher.from_env()
         self._cache_file = self._resolve_cache_file()
         self._state_file = self._resolve_state_file()
         self._accounts_file = self._resolve_accounts_file()
@@ -1109,6 +1111,63 @@ class BrandStudioService:
                     message=f"GitHub publish failed: {exc}",
                 )
 
+        if item.target_channel == "devto":
+            if self._devto_publisher is None:
+                item.status = "failed"
+                item.updated_at = now
+                self._persist_runtime_state()
+                self._add_audit(
+                    actor=actor,
+                    action="queue.publish",
+                    status="failed",
+                    payload=f"{item_id}:devto_not_configured",
+                )
+                return PublishResult(
+                    success=False,
+                    status="failed",
+                    published_at=now,
+                    message="Dev.to publisher not configured (set DEVTO_API_KEY)",
+                )
+            try:
+                publish_result = self._devto_publisher.publish_markdown(
+                    title=f"{item.target_channel}-{item.item_id}",
+                    content=item.payload,
+                    target=item.target_repo,
+                )
+                item.status = "published"
+                item.updated_at = now
+                self._persist_runtime_state()
+                self._add_audit(
+                    actor=actor,
+                    action="queue.publish",
+                    status="published",
+                    payload=item_id,
+                )
+                return PublishResult(
+                    success=True,
+                    status="published",
+                    published_at=now,
+                    external_id=publish_result.external_id,
+                    url=publish_result.url,
+                    message=publish_result.message,
+                )
+            except Exception as exc:
+                item.status = "failed"
+                item.updated_at = now
+                self._persist_runtime_state()
+                self._add_audit(
+                    actor=actor,
+                    action="queue.publish",
+                    status="failed",
+                    payload=f"{item_id}:{exc}",
+                )
+                return PublishResult(
+                    success=False,
+                    status="failed",
+                    published_at=now,
+                    message=f"Dev.to publish failed: {exc}",
+                )
+
         item.status = "published"
         item.updated_at = now
         self._persist_runtime_state()
@@ -1141,6 +1200,13 @@ class BrandStudioService:
         github_token = (os.getenv("GITHUB_TOKEN_BRAND") or "").strip()
         github_repo = (os.getenv("BRAND_TARGET_REPO") or "").strip()
         x_token = (os.getenv("X_API_TOKEN") or "").strip()
+        devto_key = (os.getenv("DEVTO_API_KEY") or "").strip()
+        reddit_client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
+        reddit_client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
+        hashnode_token = (os.getenv("HASHNODE_TOKEN") or "").strip()
+        linkedin_token = (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip()
+        medium_token = (os.getenv("MEDIUM_TOKEN") or "").strip()
+        hf_token = (os.getenv("HF_TOKEN") or "").strip()
 
         items = [
             IntegrationDescriptor(
@@ -1195,6 +1261,97 @@ class BrandStudioService:
                 key_hint="X_API_TOKEN",
                 masked_secret=_masked_secret(x_token),
             ),
+            IntegrationDescriptor(
+                id="devto_publish",
+                name="Dev.to publish",
+                requires_key=True,
+                status="configured" if devto_key else "missing",
+                details=(
+                    "Dev.to token present"
+                    if devto_key
+                    else "Missing DEVTO_API_KEY"
+                ),
+                key_hint="DEVTO_API_KEY",
+                masked_secret=_masked_secret(devto_key),
+            ),
+            IntegrationDescriptor(
+                id="reddit_publish",
+                name="Reddit publish",
+                requires_key=True,
+                status="configured" if reddit_client_id and reddit_client_secret else "missing",
+                details=(
+                    "Reddit credentials present"
+                    if reddit_client_id and reddit_client_secret
+                    else "Missing REDDIT_CLIENT_ID or REDDIT_CLIENT_SECRET"
+                ),
+                key_hint="REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET",
+                masked_secret=_masked_secret(reddit_client_secret),
+            ),
+            IntegrationDescriptor(
+                id="hashnode_publish",
+                name="Hashnode publish",
+                requires_key=True,
+                status="configured" if hashnode_token else "missing",
+                details=(
+                    "Hashnode token present"
+                    if hashnode_token
+                    else "Missing HASHNODE_TOKEN"
+                ),
+                key_hint="HASHNODE_TOKEN",
+                masked_secret=_masked_secret(hashnode_token),
+            ),
+            IntegrationDescriptor(
+                id="linkedin_publish",
+                name="LinkedIn publish",
+                requires_key=True,
+                status="configured" if linkedin_token else "missing",
+                details=(
+                    "LinkedIn token present (connector planned)"
+                    if linkedin_token
+                    else "Missing LINKEDIN_ACCESS_TOKEN"
+                ),
+                key_hint="LINKEDIN_ACCESS_TOKEN",
+                masked_secret=_masked_secret(linkedin_token),
+            ),
+            IntegrationDescriptor(
+                id="medium_publish",
+                name="Medium publish",
+                requires_key=True,
+                status="configured" if medium_token else "missing",
+                details=(
+                    "Medium token present (connector planned)"
+                    if medium_token
+                    else "Missing MEDIUM_TOKEN"
+                ),
+                key_hint="MEDIUM_TOKEN",
+                masked_secret=_masked_secret(medium_token),
+            ),
+            IntegrationDescriptor(
+                id="hf_blog_publish",
+                name="HF Blog publish",
+                requires_key=True,
+                status="configured" if hf_token else "missing",
+                details=(
+                    "HF token present (connector planned)"
+                    if hf_token
+                    else "Missing HF_TOKEN"
+                ),
+                key_hint="HF_TOKEN",
+                masked_secret=_masked_secret(hf_token),
+            ),
+            IntegrationDescriptor(
+                id="hf_spaces_publish",
+                name="HF Spaces publish",
+                requires_key=True,
+                status="configured" if hf_token else "missing",
+                details=(
+                    "HF token present (connector planned)"
+                    if hf_token
+                    else "Missing HF_TOKEN"
+                ),
+                key_hint="HF_TOKEN",
+                masked_secret=_masked_secret(hf_token),
+            ),
         ]
         return items
 
@@ -1248,6 +1405,61 @@ class BrandStudioService:
                     status = "configured"
                     success = True
                     message = "Token present (manual publish in MVP)"
+            elif integration_id == "devto_publish":
+                if self._devto_publisher is None:
+                    status = "missing"
+                    message = "Missing DEVTO_API_KEY"
+                else:
+                    self._devto_publisher.validate_connection()
+                    status = "configured"
+                    success = True
+                    message = "Dev.to API reachable"
+            elif integration_id == "reddit_publish":
+                client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
+                client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
+                if client_id and client_secret:
+                    status = "configured"
+                    success = True
+                    message = "Credentials present (connector planned)"
+                else:
+                    status = "missing"
+                    message = "Missing REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"
+            elif integration_id == "hashnode_publish":
+                token = (os.getenv("HASHNODE_TOKEN") or "").strip()
+                if token:
+                    status = "configured"
+                    success = True
+                    message = "Token present (connector planned)"
+                else:
+                    status = "missing"
+                    message = "Missing HASHNODE_TOKEN"
+            elif integration_id == "linkedin_publish":
+                token = (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip()
+                if token:
+                    status = "configured"
+                    success = True
+                    message = "Token present (connector planned)"
+                else:
+                    status = "missing"
+                    message = "Missing LINKEDIN_ACCESS_TOKEN"
+            elif integration_id == "medium_publish":
+                token = (os.getenv("MEDIUM_TOKEN") or "").strip()
+                if token:
+                    status = "configured"
+                    success = True
+                    message = "Token present (connector planned)"
+                else:
+                    status = "missing"
+                    message = "Missing MEDIUM_TOKEN"
+            elif integration_id in {"hf_blog_publish", "hf_spaces_publish"}:
+                token = (os.getenv("HF_TOKEN") or "").strip()
+                if token:
+                    status = "configured"
+                    success = True
+                    message = "Token present (connector planned)"
+                else:
+                    status = "missing"
+                    message = "Missing HF_TOKEN"
         except Exception as exc:
             logger.exception("Brand Studio integration test failed [%s]", integration_id)
             status = "invalid"

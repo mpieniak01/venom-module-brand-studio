@@ -22,7 +22,19 @@ type PublishChannel =
 type Channel = "all" | PublishChannel;
 type Tab = "radar" | "config" | "integrations";
 type DiscoveryMode = "stub" | "hybrid" | "live";
-type IntegrationId = "github_publish" | "rss" | "hn" | "arxiv" | "x";
+type IntegrationId =
+  | "github_publish"
+  | "rss"
+  | "hn"
+  | "arxiv"
+  | "x"
+  | "devto_publish"
+  | "reddit_publish"
+  | "hashnode_publish"
+  | "linkedin_publish"
+  | "medium_publish"
+  | "hf_blog_publish"
+  | "hf_spaces_publish";
 
 type Candidate = {
   id: string;
@@ -436,7 +448,9 @@ export default function BrandStudioPage() {
     setDraftError(null);
     try {
       const selectedChannels =
-        channel === "all" ? (["x", "github", "blog"] as const) : ([channel] as const);
+        channel === "all"
+          ? configForm.active_channels
+          : ([channel] as const);
       const selectedLanguages =
         apiLang === "pl" || apiLang === "en" ? ([apiLang] as const) : (["pl", "en"] as const);
       const response = await fetch("/api/v1/brand-studio/drafts/generate", {
@@ -1016,9 +1030,11 @@ export default function BrandStudioPage() {
                   className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
                 >
                   <option value="all">{t("filters.allChannels")}</option>
-                  <option value="x">X</option>
-                  <option value="github">GitHub</option>
-                  <option value="blog">Blog</option>
+                  {CHANNELS.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="space-y-1">

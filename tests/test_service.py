@@ -403,3 +403,62 @@ def test_channel_accounts_lifecycle_and_queue_binding(monkeypatch, tmp_path: Pat
 
     service.delete_channel_account("devto", created.account_id, actor="tester")
     assert service.channel_accounts("devto").items == []
+
+
+def test_publish_devto_channel_with_connector(monkeypatch, tmp_path: Path) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    accounts_file = tmp_path / "accounts-state.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+
+    service = BrandStudioService()
+    account = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(display_name="Devto E2E", target="devto-user", is_default=True),
+        actor="tester",
+    )
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["en"],
+        tone="expert",
+        actor="tester",
+    )
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="devto",
+        target_language="en",
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=account.account_id,
+    )
+
+    class FakeDevtoPublisher:
+        def publish_markdown(self, *, title: str, content: str, target: str | None = None):  # noqa: ANN001
+            assert title
+            assert content
+            assert target == "devto-user"
+
+            class Result:
+                external_id = "devto-42"
+                url = "https://dev.to/example"
+                message = "Published to Dev.to"
+
+            return Result()
+
+    service._devto_publisher = FakeDevtoPublisher()  # type: ignore[attr-defined]
+
+    result = service.publish_queue_item(
+        item_id=queue_item.item_id,
+        confirm_publish=True,
+        actor="tester",
+    )
+    assert result.success is True
+    assert result.status == "published"
+    assert result.external_id == "devto-42"

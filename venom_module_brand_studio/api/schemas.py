@@ -22,7 +22,20 @@ BrandChannel = Literal[
 ChannelId = BrandChannel
 DraftLanguage = Literal["pl", "en"]
 IntegrationStatus = Literal["configured", "missing", "invalid"]
-IntegrationId = Literal["github_publish", "rss", "hn", "arxiv", "x"]
+IntegrationId = Literal[
+    "github_publish",
+    "rss",
+    "hn",
+    "arxiv",
+    "x",
+    "devto_publish",
+    "reddit_publish",
+    "hashnode_publish",
+    "linkedin_publish",
+    "medium_publish",
+    "hf_blog_publish",
+    "hf_spaces_publish",
+]
 
 
 class OpportunityScoreBreakdown(BaseModel):
