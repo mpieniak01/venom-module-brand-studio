@@ -4,7 +4,7 @@
   "display_name": "Brand Studio",
   "backend": {
     "router_import": "venom_module_brand_studio.api.routes:router",
-    "module_api_version": "1.0.0",
+    "module_api_version": "1",
     "min_core_version": "1.5.0"
   },
   "frontend": {
