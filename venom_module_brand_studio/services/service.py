@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -15,61 +16,17 @@ from venom_module_brand_studio.api.schemas import (
     PublishQueueItem,
     PublishResult,
 )
+from venom_module_brand_studio.connectors.github import GitHubPublisher
+from venom_module_brand_studio.connectors.sources import (
+    fetch_arxiv_items,
+    fetch_github_items,
+    fetch_hn_items,
+    fetch_rss_items,
+)
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-def _sample_candidates() -> list[ContentCandidate]:
-    raw_items = [
-        {
-            "id": "cand-1",
-            "source": "github",
-            "url": "https://github.com/trending?utm_source=weekly",
-            "topic": "Runtime governance for local-first AI stacks",
-            "summary": "Growing discussion around governance and safe runtime fallback paths.",
-            "language": "en",
-            "age_minutes": 40,
-        },
-        {
-            "id": "cand-2",
-            "source": "hn",
-            "url": "https://news.ycombinator.com/item?id=123",
-            "topic": "Cost controls for hybrid local/cloud LLM routing",
-            "summary": "Thread on balancing local privacy with cloud elasticity.",
-            "language": "en",
-            "age_minutes": 120,
-        },
-        {
-            "id": "cand-3",
-            "source": "rss",
-            "url": "https://example.org/devops-ai?ref=feed",
-            "topic": "Jak budowac moduły pluginowe bez długu w core",
-            "summary": "Artykuł o kontraktach modułowych i separacji produktu od platformy.",
-            "language": "pl",
-            "age_minutes": 300,
-        },
-        {
-            "id": "cand-4",
-            "source": "rss",
-            "url": "https://github.com/trending",
-            "topic": "Runtime governance for local-first AI stacks",
-            "summary": "Growing discussion around governance and safe runtime fallback paths.",
-            "language": "en",
-            "age_minutes": 55,
-        },
-        {
-            "id": "cand-5",
-            "source": "arxiv",
-            "url": "https://arxiv.org/abs/2501.12345",
-            "topic": "Agentic coding assistants with memory and retrieval",
-            "summary": "Study of productivity gains and failure modes.",
-            "language": "en",
-            "age_minutes": 480,
-        },
-    ]
-    return _normalize_and_rank_candidates(raw_items)
 
 
 def _canonical_url(raw_url: str) -> str:
@@ -79,9 +36,7 @@ def _canonical_url(raw_url: str) -> str:
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
         if not (key.startswith("utm_") or key in {"ref", "source", "fbclid", "gclid"})
     ]
-    return urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, urlencode(cleaned_query), "")
-    )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(cleaned_query), ""))
 
 
 def _normalize_lang(raw_lang: str) -> str:
@@ -154,7 +109,7 @@ def _normalize_and_rank_candidates(raw_items: list[dict[str, object]]) -> list[C
         ).hexdigest()
 
         candidate = ContentCandidate(
-            id=str(raw["id"]),
+            id=str(raw.get("id") or f"cand-{uuid4().hex[:10]}"),
             source=str(raw["source"]),
             url=canonical_url,
             topic=topic,
@@ -174,12 +129,111 @@ def _normalize_and_rank_candidates(raw_items: list[dict[str, object]]) -> list[C
     return ranked
 
 
+def _sample_candidates() -> list[ContentCandidate]:
+    raw_items = [
+        {
+            "id": "cand-1",
+            "source": "github",
+            "url": "https://github.com/trending?utm_source=weekly",
+            "topic": "Runtime governance for local-first AI stacks",
+            "summary": "Growing discussion around governance and safe runtime fallback paths.",
+            "language": "en",
+            "age_minutes": 40,
+        },
+        {
+            "id": "cand-2",
+            "source": "hn",
+            "url": "https://news.ycombinator.com/item?id=123",
+            "topic": "Cost controls for hybrid local/cloud LLM routing",
+            "summary": "Thread on balancing local privacy with cloud elasticity.",
+            "language": "en",
+            "age_minutes": 120,
+        },
+        {
+            "id": "cand-3",
+            "source": "rss",
+            "url": "https://example.org/devops-ai?ref=feed",
+            "topic": "Jak budowac moduły pluginowe bez długu w core",
+            "summary": "Artykuł o kontraktach modułowych i separacji produktu od platformy.",
+            "language": "pl",
+            "age_minutes": 300,
+        },
+    ]
+    return _normalize_and_rank_candidates(raw_items)
+
+
+def _channel_match(source: str, channel: str | None) -> bool:
+    if channel is None:
+        return True
+    normalized = re.sub(r"[^a-z]", "", channel.lower())
+    if normalized == "x":
+        return source in {"hn", "github", "rss"}
+    if normalized == "github":
+        return source in {"github", "arxiv"}
+    if normalized == "blog":
+        return True
+    return True
+
+
+def _default_target_path(channel: str) -> str:
+    date_stamp = _utcnow().strftime("%Y-%m-%d")
+    if channel == "blog":
+        return f"content/brand-studio/{date_stamp}-brand-studio.md"
+    return f"notes/brand-studio/{date_stamp}-brand-studio.md"
+
+
 class BrandStudioService:
     def __init__(self) -> None:
         self._candidates: list[ContentCandidate] = _sample_candidates()
+        self._last_refresh_at: datetime = _utcnow()
         self._drafts: dict[str, DraftBundle] = {}
         self._queue: dict[str, PublishQueueItem] = {}
         self._audit: list[BrandStudioAuditEntry] = []
+        self._publisher = GitHubPublisher.from_env()
+
+    def refresh_candidates(self) -> None:
+        mode = (os.getenv("BRAND_STUDIO_DISCOVERY_MODE") or "hybrid").strip().lower()
+        if mode == "stub":
+            self._candidates = _sample_candidates()
+            self._last_refresh_at = _utcnow()
+            return
+
+        live_items = self._fetch_live_items()
+        if live_items:
+            self._candidates = _normalize_and_rank_candidates(live_items)
+            self._last_refresh_at = _utcnow()
+            return
+        if mode == "live":
+            self._candidates = []
+        else:
+            self._candidates = _sample_candidates()
+        self._last_refresh_at = _utcnow()
+
+    def _fetch_live_items(self) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        rss_urls = [
+            item.strip()
+            for item in (os.getenv("BRAND_STUDIO_RSS_URLS") or "").split(",")
+            if item.strip()
+        ]
+        try:
+            if rss_urls:
+                items.extend(fetch_rss_items(rss_urls))
+        except Exception:
+            pass
+        try:
+            items.extend(fetch_github_items())
+        except Exception:
+            pass
+        try:
+            items.extend(fetch_hn_items())
+        except Exception:
+            pass
+        try:
+            items.extend(fetch_arxiv_items())
+        except Exception:
+            pass
+        return items
 
     def list_candidates(
         self,
@@ -189,6 +243,7 @@ class BrandStudioService:
         limit: int,
         min_score: float,
     ) -> tuple[list[ContentCandidate], datetime]:
+        self.refresh_candidates()
         items = [
             item
             for item in self._candidates
@@ -197,7 +252,7 @@ class BrandStudioService:
             and _channel_match(item.source, channel)
         ]
         items.sort(key=lambda it: it.score, reverse=True)
-        return items[:limit], _utcnow()
+        return items[:limit], self._last_refresh_at
 
     def generate_draft(
         self,
@@ -226,9 +281,7 @@ class BrandStudioService:
                         f"{candidate.topic}: {candidate.summary} "
                         f"My engineering perspective with practical takeaways.{tone_suffix}".strip()
                     )
-                variants.append(
-                    DraftVariant(channel=channel, language=language, content=content)
-                )
+                variants.append(DraftVariant(channel=channel, language=language, content=content))
 
         draft_id = f"draft-{uuid4().hex[:10]}"
         bundle = DraftBundle(draft_id=draft_id, candidate_id=candidate_id, variants=variants)
@@ -241,16 +294,32 @@ class BrandStudioService:
         *,
         draft_id: str,
         target_channel: str,
+        target_language: str | None,
+        target_repo: str | None,
+        target_path: str | None,
+        payload_override: str | None,
         actor: str,
     ) -> PublishQueueItem:
-        if draft_id not in self._drafts:
+        bundle = self._drafts.get(draft_id)
+        if bundle is None:
             raise KeyError("draft_not_found")
 
+        candidate_variant = self._choose_variant(
+            bundle=bundle, target_channel=target_channel, target_language=target_language
+        )
+        if candidate_variant is None:
+            raise KeyError("draft_variant_not_found")
+
+        payload = payload_override or candidate_variant.content
         now = _utcnow()
         item = PublishQueueItem(
             item_id=f"queue-{uuid4().hex[:10]}",
             draft_id=draft_id,
             target_channel=target_channel,
+            target_language=candidate_variant.language,
+            target_repo=target_repo or os.getenv("BRAND_TARGET_REPO"),
+            target_path=target_path or _default_target_path(target_channel),
+            payload=payload,
             status="queued",
             created_at=now,
             updated_at=now,
@@ -258,6 +327,20 @@ class BrandStudioService:
         self._queue[item.item_id] = item
         self._add_audit(actor=actor, action="queue.create", status="queued", payload=item.item_id)
         return item
+
+    def _choose_variant(
+        self,
+        *,
+        bundle: DraftBundle,
+        target_channel: str,
+        target_language: str | None,
+    ) -> DraftVariant | None:
+        variants = [v for v in bundle.variants if v.channel == target_channel]
+        if target_language:
+            lang_match = [v for v in variants if v.language == target_language]
+            if lang_match:
+                return lang_match[0]
+        return variants[0] if variants else None
 
     def publish_queue_item(
         self,
@@ -269,10 +352,8 @@ class BrandStudioService:
         item = self._queue.get(item_id)
         if item is None:
             raise KeyError("queue_item_not_found")
-
         if not confirm_publish:
             raise ValueError("confirm_publish_required")
-
         if item.status == "published":
             return PublishResult(
                 success=True,
@@ -284,16 +365,78 @@ class BrandStudioService:
             )
 
         now = _utcnow()
+        if item.target_channel in {"github", "blog"}:
+            if self._publisher is None:
+                item.status = "failed"
+                item.updated_at = now
+                self._add_audit(
+                    actor=actor,
+                    action="queue.publish",
+                    status="failed",
+                    payload=f"{item_id}:github_not_configured",
+                )
+                return PublishResult(
+                    success=False,
+                    status="failed",
+                    published_at=now,
+                    message=(
+                        "GitHub publisher not configured "
+                        "(set GITHUB_TOKEN_BRAND and BRAND_TARGET_REPO)"
+                    ),
+                )
+            try:
+                result = self._publisher.publish_markdown(
+                    path=item.target_path or _default_target_path(item.target_channel),
+                    content=item.payload,
+                    title=f"{item.target_channel}-{item.item_id}",
+                )
+                item.status = "published"
+                item.updated_at = now
+                self._add_audit(
+                    actor=actor,
+                    action="queue.publish",
+                    status="published",
+                    payload=item_id,
+                )
+                return PublishResult(
+                    success=True,
+                    status="published",
+                    published_at=now,
+                    external_id=result.external_id,
+                    url=result.url,
+                    message=result.message,
+                )
+            except Exception as exc:
+                item.status = "failed"
+                item.updated_at = now
+                self._add_audit(
+                    actor=actor,
+                    action="queue.publish",
+                    status="failed",
+                    payload=f"{item_id}:{exc}",
+                )
+                return PublishResult(
+                    success=False,
+                    status="failed",
+                    published_at=now,
+                    message=f"GitHub publish failed: {exc}",
+                )
+
+        # X channel remains manual in MVP.
         item.status = "published"
         item.updated_at = now
-        self._add_audit(actor=actor, action="queue.publish", status="published", payload=item_id)
+        self._add_audit(
+            actor=actor,
+            action="queue.publish",
+            status="manual",
+            payload=f"{item_id}:x",
+        )
         return PublishResult(
             success=True,
             status="published",
             published_at=now,
-            external_id=f"ext-{item_id}",
-            url=f"https://example.org/published/{item_id}",
-            message="Published successfully",
+            external_id=f"manual-{item_id}",
+            message="X publish marked as manual-complete in MVP",
         )
 
     def queue_items(self) -> list[PublishQueueItem]:
@@ -327,16 +470,3 @@ def get_brand_studio_service() -> BrandStudioService:
 
 def health_payload() -> dict[str, str]:
     return {"status": "ok", "module": "brand_studio"}
-
-
-def _channel_match(source: str, channel: str | None) -> bool:
-    if channel is None:
-        return True
-    normalized = re.sub(r"[^a-z]", "", channel.lower())
-    if normalized == "x":
-        return source in {"hn", "github", "rss"}
-    if normalized == "github":
-        return source in {"github", "arxiv"}
-    if normalized == "blog":
-        return True
-    return True

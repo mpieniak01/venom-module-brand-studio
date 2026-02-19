@@ -49,6 +49,12 @@ In `/home/ubuntu/venom/.env`:
 API_OPTIONAL_MODULES=manifest:/home/ubuntu/venom/modules/venom-module-brand-studio/module.json
 FEATURE_BRAND_STUDIO=true
 NEXT_PUBLIC_FEATURE_BRAND_STUDIO=true
+BRAND_STUDIO_DISCOVERY_MODE=hybrid
+BRAND_STUDIO_RSS_URLS=https://example.org/feed.xml,https://example.org/another-feed.xml
+GITHUB_TOKEN_BRAND=<token>
+BRAND_TARGET_REPO=mpieniak01/mpieniak01
+BRAND_GITHUB_PUBLISH_MODE=commit
+BRAND_GITHUB_BASE_BRANCH=main
 ```
 
 After changing env values, restart Venom services.

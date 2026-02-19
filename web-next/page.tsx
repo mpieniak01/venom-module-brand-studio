@@ -245,6 +245,7 @@ export default function BrandStudioPage() {
           },
           body: JSON.stringify({
             target_channel: variant.channel,
+            target_language: variant.language,
           }),
         });
         if (!response.ok) {

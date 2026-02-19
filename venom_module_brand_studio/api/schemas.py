@@ -60,6 +60,7 @@ class QueueDraftRequest(BaseModel):
     target_channel: Literal["x", "github", "blog"]
     target_repo: str | None = None
     target_path: str | None = None
+    target_language: Literal["pl", "en"] | None = None
     payload_override: str | None = None
 
 
@@ -86,6 +87,10 @@ class PublishQueueItem(BaseModel):
     item_id: str
     draft_id: str
     target_channel: Literal["x", "github", "blog"]
+    target_language: Literal["pl", "en"] | None = None
+    target_repo: str | None = None
+    target_path: str | None = None
+    payload: str = ""
     status: PublishStatus
     created_at: datetime
     updated_at: datetime

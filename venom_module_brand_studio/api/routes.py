@@ -90,7 +90,7 @@ async def generate_draft(
 @router.post(
     "/drafts/{draft_id}/queue",
     response_model=QueueCreateResponse,
-    responses={404: {"description": "Draft not found"}},
+    responses={404: {"description": "Draft or variant not found"}},
 )
 async def queue_draft(
     draft_id: str,
@@ -102,13 +102,17 @@ async def queue_draft(
         item = service.queue_draft(
             draft_id=draft_id,
             target_channel=payload.target_channel,
+            target_language=payload.target_language,
+            target_repo=payload.target_repo,
+            target_path=payload.target_path,
+            payload_override=payload.payload_override,
             actor=actor,
         )
     except KeyError as exc:
-        if str(exc).strip("'") == "draft_not_found":
+        if str(exc).strip("'") in {"draft_not_found", "draft_variant_not_found"}:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Draft not found",
+                detail="Draft or variant not found",
             ) from exc
         raise
     return QueueCreateResponse(
