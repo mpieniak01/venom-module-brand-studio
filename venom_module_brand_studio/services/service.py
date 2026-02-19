@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -184,30 +186,137 @@ def _default_target_path(channel: str) -> str:
 
 class BrandStudioService:
     def __init__(self) -> None:
-        self._candidates: list[ContentCandidate] = _sample_candidates()
-        self._last_refresh_at: datetime = _utcnow()
+        self._candidates: list[ContentCandidate] = []
+        self._last_refresh_at: datetime = datetime.fromtimestamp(0, tz=UTC)
         self._drafts: dict[str, DraftBundle] = {}
         self._queue: dict[str, PublishQueueItem] = {}
         self._audit: list[BrandStudioAuditEntry] = []
         self._publisher = GitHubPublisher.from_env()
+        self._cache_ttl_seconds = self._resolve_cache_ttl_seconds()
+        self._cache_file = self._resolve_cache_file()
+        self._state_file = self._resolve_state_file()
+        self._load_candidates_cache()
+        self._load_runtime_state()
+
+    def _resolve_cache_ttl_seconds(self) -> int:
+        raw = (os.getenv("BRAND_STUDIO_CACHE_TTL_SECONDS") or "1800").strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            return 1800
+        return max(30, value)
+
+    def _resolve_cache_file(self) -> Path:
+        raw = (os.getenv("BRAND_STUDIO_CACHE_FILE") or "").strip()
+        if raw:
+            return Path(raw)
+        return Path("/tmp/venom-brand-studio/candidates-cache.json")
+
+    def _resolve_state_file(self) -> Path:
+        raw = (os.getenv("BRAND_STUDIO_STATE_FILE") or "").strip()
+        if raw:
+            return Path(raw)
+        return Path("/tmp/venom-brand-studio/runtime-state.json")
+
+    def _is_cache_fresh(self) -> bool:
+        if not self._candidates:
+            return False
+        age_seconds = (_utcnow() - self._last_refresh_at).total_seconds()
+        return age_seconds <= self._cache_ttl_seconds
+
+    def _load_candidates_cache(self) -> None:
+        try:
+            if not self._cache_file.exists():
+                return
+            payload = json.loads(self._cache_file.read_text(encoding="utf-8"))
+            refreshed_at_raw = payload.get("refreshed_at")
+            items_raw = payload.get("items")
+            if not isinstance(refreshed_at_raw, str) or not isinstance(items_raw, list):
+                return
+            loaded_items: list[ContentCandidate] = []
+            for item in items_raw:
+                if isinstance(item, dict):
+                    loaded_items.append(ContentCandidate.model_validate(item))
+            if not loaded_items:
+                return
+            self._last_refresh_at = datetime.fromisoformat(refreshed_at_raw)
+            if self._last_refresh_at.tzinfo is None:
+                self._last_refresh_at = self._last_refresh_at.replace(tzinfo=UTC)
+            self._candidates = loaded_items
+        except Exception:
+            # Cache is best-effort only. Invalid file should not break module startup.
+            return
+
+    def _persist_candidates_cache(self) -> None:
+        try:
+            self._cache_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "refreshed_at": self._last_refresh_at.isoformat(),
+                "items": [item.model_dump(mode="json") for item in self._candidates],
+            }
+            self._cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            # Cache write errors must not fail request processing.
+            return
+
+    def _load_runtime_state(self) -> None:
+        try:
+            if not self._state_file.exists():
+                return
+            payload = json.loads(self._state_file.read_text(encoding="utf-8"))
+            queue_raw = payload.get("queue")
+            audit_raw = payload.get("audit")
+            if isinstance(queue_raw, list):
+                loaded_queue: dict[str, PublishQueueItem] = {}
+                for item in queue_raw:
+                    if isinstance(item, dict):
+                        model = PublishQueueItem.model_validate(item)
+                        loaded_queue[model.item_id] = model
+                self._queue = loaded_queue
+            if isinstance(audit_raw, list):
+                loaded_audit: list[BrandStudioAuditEntry] = []
+                for item in audit_raw:
+                    if isinstance(item, dict):
+                        loaded_audit.append(BrandStudioAuditEntry.model_validate(item))
+                self._audit = loaded_audit
+        except Exception:
+            # State file is best-effort only.
+            return
+
+    def _persist_runtime_state(self) -> None:
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "queue": [item.model_dump(mode="json") for item in self._queue.values()],
+                "audit": [item.model_dump(mode="json") for item in self._audit],
+            }
+            self._state_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            # Persistence is best-effort and must never break request flow.
+            return
 
     def refresh_candidates(self) -> None:
+        if self._is_cache_fresh():
+            return
         mode = (os.getenv("BRAND_STUDIO_DISCOVERY_MODE") or "hybrid").strip().lower()
         if mode == "stub":
             self._candidates = _sample_candidates()
             self._last_refresh_at = _utcnow()
+            self._persist_candidates_cache()
             return
 
         live_items = self._fetch_live_items()
         if live_items:
             self._candidates = _normalize_and_rank_candidates(live_items)
             self._last_refresh_at = _utcnow()
+            self._persist_candidates_cache()
             return
         if mode == "live":
             self._candidates = []
         else:
             self._candidates = _sample_candidates()
         self._last_refresh_at = _utcnow()
+        self._persist_candidates_cache()
 
     def _fetch_live_items(self) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
@@ -355,14 +464,7 @@ class BrandStudioService:
         if not confirm_publish:
             raise ValueError("confirm_publish_required")
         if item.status == "published":
-            return PublishResult(
-                success=True,
-                status="published",
-                published_at=item.updated_at,
-                external_id=f"ext-{item_id}",
-                url=f"https://example.org/published/{item_id}",
-                message="Already published",
-            )
+            raise ValueError("queue_item_already_published")
 
         now = _utcnow()
         if item.target_channel in {"github", "blog"}:
@@ -459,6 +561,7 @@ class BrandStudioService:
                 timestamp=_utcnow(),
             )
         )
+        self._persist_runtime_state()
 
 
 _service = BrandStudioService()

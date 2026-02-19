@@ -88,15 +88,18 @@ def test_publish_requires_confirm_publish_true() -> None:
             "channels": ["x"],
             "languages": ["pl"],
         },
+        headers={"X-Authenticated-User": "mpieniak"},
     ).json()
     queue_payload = client.post(
         f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
         json={"target_channel": "x"},
+        headers={"X-Authenticated-User": "mpieniak"},
     ).json()
 
     response = client.post(
         f"/api/v1/brand-studio/queue/{queue_payload['item_id']}/publish",
         json={"confirm_publish": False},
+        headers={"X-Authenticated-User": "mpieniak"},
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "confirm_publish must be true"
@@ -108,17 +111,83 @@ def test_404_errors_for_missing_resources() -> None:
     draft_response = client.post(
         "/api/v1/brand-studio/drafts/generate",
         json={"candidate_id": "missing", "channels": ["x"], "languages": ["pl"]},
+        headers={"X-Authenticated-User": "mpieniak"},
     )
     assert draft_response.status_code == 404
 
     queue_response = client.post(
         "/api/v1/brand-studio/drafts/draft-missing/queue",
         json={"target_channel": "x"},
+        headers={"X-Authenticated-User": "mpieniak"},
     )
     assert queue_response.status_code == 404
 
     publish_response = client.post(
         "/api/v1/brand-studio/queue/queue-missing/publish",
         json={"confirm_publish": True},
+        headers={"X-Authenticated-User": "mpieniak"},
     )
     assert publish_response.status_code == 404
+
+
+def test_publish_conflict_when_item_already_published() -> None:
+    client = build_client()
+
+    candidates = client.get("/api/v1/brand-studio/sources/candidates").json()["items"]
+    candidate_id = candidates[0]["id"]
+    draft_payload = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={"candidate_id": candidate_id, "channels": ["x"], "languages": ["pl"]},
+        headers={"X-Authenticated-User": "mpieniak"},
+    ).json()
+    queue_payload = client.post(
+        f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
+        json={"target_channel": "x"},
+        headers={"X-Authenticated-User": "mpieniak"},
+    ).json()
+    item_id = queue_payload["item_id"]
+
+    first_publish = client.post(
+        f"/api/v1/brand-studio/queue/{item_id}/publish",
+        json={"confirm_publish": True},
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert first_publish.status_code == 200
+
+    second_publish = client.post(
+        f"/api/v1/brand-studio/queue/{item_id}/publish",
+        json={"confirm_publish": True},
+        headers={"X-Authenticated-User": "mpieniak"},
+    )
+    assert second_publish.status_code == 409
+    assert second_publish.json()["detail"] == "Queue item already published"
+
+
+def test_401_for_mutating_endpoint_without_actor_header() -> None:
+    client = build_client()
+    candidates = client.get("/api/v1/brand-studio/sources/candidates").json()["items"]
+    candidate_id = candidates[0]["id"]
+
+    response = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={"candidate_id": candidate_id, "channels": ["x"], "languages": ["pl"]},
+    )
+    assert response.status_code == 401
+
+
+def test_403_when_feature_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("FEATURE_BRAND_STUDIO", "false")
+    client = build_client()
+    response = client.get("/api/v1/brand-studio/sources/candidates")
+    assert response.status_code == 403
+
+
+def test_403_when_actor_not_in_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_ALLOWED_USERS", "allowed-user")
+    client = build_client()
+    response = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={"candidate_id": "cand-1", "channels": ["x"], "languages": ["pl"]},
+        headers={"X-Authenticated-User": "blocked-user"},
+    )
+    assert response.status_code == 403

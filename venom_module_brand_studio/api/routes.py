@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -40,13 +41,54 @@ def _actor_from_headers(
     return "unknown"
 
 
+def _feature_guard() -> None:
+    enabled = (os.getenv("FEATURE_BRAND_STUDIO") or "").strip().lower()
+    if enabled in {"0", "false", "off", "no"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Brand Studio feature disabled",
+        )
+
+
+def _allowed_users_guard(actor: str) -> None:
+    raw = (os.getenv("BRAND_STUDIO_ALLOWED_USERS") or "").strip()
+    if not raw:
+        return
+    allowed = {item.strip() for item in raw.split(",") if item.strip()}
+    if actor not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not allowed for Brand Studio",
+        )
+
+
+def _actor_required(actor: str = Depends(_actor_from_headers)) -> str:
+    if actor == "unknown":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authenticated user header",
+        )
+    _allowed_users_guard(actor)
+    return actor
+
+
+def _actor_optional(actor: str = Depends(_actor_from_headers)) -> str:
+    if actor != "unknown":
+        _allowed_users_guard(actor)
+    return actor
+
+
 ServiceDep = Annotated[BrandStudioService, Depends(get_brand_studio_service)]
-ActorDep = Annotated[str, Depends(_actor_from_headers)]
+FeatureDep = Annotated[None, Depends(_feature_guard)]
+ActorDep = Annotated[str, Depends(_actor_required)]
+OptionalActorDep = Annotated[str, Depends(_actor_optional)]
 
 
 @router.get("/sources/candidates", response_model=CandidatesResponse)
 async def list_candidates(
+    _feature: FeatureDep,
     service: ServiceDep,
+    _actor: OptionalActorDep,
     channel: Annotated[str | None, Query()] = None,
     lang: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
@@ -68,6 +110,7 @@ async def list_candidates(
 )
 async def generate_draft(
     payload: DraftGenerateRequest,
+    _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> DraftBundle:
@@ -95,6 +138,7 @@ async def generate_draft(
 async def queue_draft(
     draft_id: str,
     payload: QueueDraftRequest,
+    _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> QueueCreateResponse:
@@ -128,11 +172,13 @@ async def queue_draft(
     responses={
         400: {"description": "confirm_publish must be true"},
         404: {"description": "Queue item not found"},
+        409: {"description": "Queue item is already published"},
     },
 )
 async def publish_queue_item(
     item_id: str,
     payload: PublishRequest,
+    _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
 ) -> PublishResult:
@@ -148,6 +194,11 @@ async def publish_queue_item(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="confirm_publish must be true",
             ) from exc
+        if str(exc) == "queue_item_already_published":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Queue item already published",
+            ) from exc
         raise
     except KeyError as exc:
         if str(exc).strip("'") == "queue_item_not_found":
@@ -158,12 +209,20 @@ async def publish_queue_item(
 
 
 @router.get("/queue", response_model=QueueResponse)
-async def list_queue(service: ServiceDep) -> QueueResponse:
+async def list_queue(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> QueueResponse:
     items = service.queue_items()
     return QueueResponse(count=len(items), items=items)
 
 
 @router.get("/audit", response_model=AuditResponse)
-async def list_audit(service: ServiceDep) -> AuditResponse:
+async def list_audit(
+    _feature: FeatureDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> AuditResponse:
     items = service.audit_items()
     return AuditResponse(count=len(items), items=items)
