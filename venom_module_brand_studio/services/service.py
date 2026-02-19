@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ from venom_module_brand_studio.connectors.sources import (
     fetch_hn_items,
     fetch_rss_items,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StrategyNotFoundError(KeyError):
@@ -313,7 +316,8 @@ class BrandStudioService:
                 "items": [item.model_dump(mode="json") for item in self._candidates],
             }
             self._cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except Exception:
+        except Exception as exc:
+            logger.warning("Brand Studio candidates cache persist failed: %s", exc)
             return
 
     def _load_runtime_state(self) -> None:
@@ -363,7 +367,8 @@ class BrandStudioService:
                         except Exception:
                             pass
                 self._last_integration_test = loaded
-        except Exception:
+        except Exception as exc:
+            logger.warning("Brand Studio runtime state load failed: %s", exc)
             return
 
     def _persist_runtime_state(self) -> None:
@@ -379,7 +384,8 @@ class BrandStudioService:
                 },
             }
             self._state_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except Exception:
+        except Exception as exc:
+            logger.warning("Brand Studio runtime state persist failed: %s", exc)
             return
 
     def config(self) -> tuple[str, StrategyConfig]:
@@ -440,7 +446,7 @@ class BrandStudioService:
             raise LastStrategyDeletionError("last_strategy_cannot_be_deleted")
         del self._strategies[strategy_id]
         if self._active_strategy_id == strategy_id:
-            self._active_strategy_id = next(iter(self._strategies.keys()))
+            self._active_strategy_id = sorted(self._strategies.keys())[0]
         self._persist_runtime_state()
         self._add_audit(actor=actor, action="strategy.delete", status="ok", payload=strategy_id)
 
@@ -790,7 +796,7 @@ class BrandStudioService:
                     status = "missing"
                     message = "GitHub publisher not configured"
                 else:
-                    self._publisher._repo()  # noqa: SLF001
+                    self._publisher.validate_connection()
                     status = "configured"
                     success = True
                     message = "GitHub API reachable"

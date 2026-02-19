@@ -1112,7 +1112,16 @@ export default function BrandStudioPage() {
             </button>
             <button
               type="button"
-              onClick={() => void deleteStrategy(configForm.id)}
+              onClick={() => {
+                if (
+                  typeof window !== "undefined" &&
+                  window.confirm(
+                    "Czy na pewno usunąć strategię? Tej operacji nie można cofnąć."
+                  )
+                ) {
+                  void deleteStrategy(configForm.id);
+                }
+              }}
               disabled={configLoading || !configForm.id}
               className="rounded-xl border border-rose-500/40 px-4 py-2 text-sm text-rose-100 disabled:opacity-50"
             >

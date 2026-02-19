@@ -80,6 +80,10 @@ class GitHubPublisher:
             return self._publish_via_pr(path=path, content=content, title=title)
         return self._publish_via_commit(path=path, content=content, title=title)
 
+    def validate_connection(self) -> bool:
+        self._repo()
+        return True
+
     def _repo(self) -> dict[str, object]:
         return _request_json(
             "GET",
