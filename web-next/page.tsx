@@ -151,6 +151,7 @@ export default function BrandStudioPage() {
 
   const [strategies, setStrategies] = useState<StrategyConfig[]>([]);
   const [activeStrategyId, setActiveStrategyId] = useState<string>("");
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string>("");
   const [configForm, setConfigForm] = useState<StrategyConfig>(DEFAULT_FORM);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -268,6 +269,7 @@ export default function BrandStudioPage() {
       const configPayload = (await configResp.json()) as ConfigResponse;
       const strategiesPayload = (await strategiesResp.json()) as StrategiesResponse;
       setActiveStrategyId(configPayload.active_strategy_id);
+      setSelectedStrategyId(configPayload.active_strategy_id);
       setConfigForm(configPayload.active_strategy);
       setStrategies(strategiesPayload.items);
       setStrategyName(configPayload.active_strategy.name);
@@ -902,16 +904,16 @@ export default function BrandStudioPage() {
         <section className="glass-panel space-y-4 rounded-2xl border border-emerald-500/20 p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.activeStrategy")}</span>
+              <span className="text-xs uppercase text-zinc-400">{t("config.editStrategy")}</span>
               <select
-                value={activeStrategyId}
+                value={selectedStrategyId}
                 onChange={(event) => {
                   const selectedId = event.target.value;
                   const found = strategies.find((item) => item.id === selectedId);
                   if (!found) {
                     return;
                   }
-                  setActiveStrategyId(selectedId);
+                  setSelectedStrategyId(selectedId);
                   setConfigForm(found);
                   setStrategyName(found.name);
                 }}
@@ -924,6 +926,12 @@ export default function BrandStudioPage() {
                 ))}
               </select>
             </label>
+            <div className="space-y-1">
+              <span className="text-xs uppercase text-zinc-400">{t("config.activeStrategy")}</span>
+              <p className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100">
+                {strategies.find((item) => item.id === activeStrategyId)?.name ?? "-"}
+              </p>
+            </div>
             <label className="space-y-1">
               <span className="text-xs uppercase text-zinc-400">{t("config.strategyName")}</span>
               <input

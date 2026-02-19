@@ -55,5 +55,6 @@
   "integrations.public": "öffentliche API",
   "integrations.key": "Schlüssel",
   "integrations.masked": "Geheimnis:",
-  "integrations.test": "Verbindung testen"
+  "integrations.test": "Verbindung testen",
+  "config.editStrategy": "Strategie zur Bearbeitung"
 }
