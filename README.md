@@ -102,6 +102,14 @@ After changing env values, restart Venom services.
 2. Set `BRAND_STUDIO_ALLOWED_USERS=user1,user2` to allow only selected actors.
 3. Mutating endpoints require authenticated actor header (`X-Authenticated-User` / `X-User` / `X-Admin-User`), otherwise `401`.
 
+### Global API traffic-control inheritance
+1. Brand Studio runs under Venom core global traffic-control (anti-spam / anti-ban).
+2. Outbound requests to external APIs are guarded by provider/method policies, retries, and circuit breakers.
+3. Inbound requests from UI to backend are guarded by endpoint-group policies with actor/session/IP keys and `429` + `Retry-After`.
+4. Detailed traffic logs are opt-in in core via:
+   - `ENABLE_TRAFFIC_CONTROL_LOGGING=false` (default),
+   - `TRAFFIC_CONTROL_LOG_DIR=/tmp/venom/traffic-control`.
+
 ### Runtime state persistence
 1. Queue and audit are persisted in `BRAND_STUDIO_STATE_FILE`.
 2. After backend restart, queue and audit entries are restored from local state file.
