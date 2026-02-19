@@ -42,6 +42,28 @@ venom-module-brand-studio/
 3. Run explicit tests:
    - `pytest -q`
 
+## Testing only this module
+To avoid running tests from the whole Venom core repository, run tests from this module repo:
+
+```bash
+cd /home/ubuntu/venom/modules/venom-module-brand-studio
+pytest -q
+```
+
+Alternative (without `cd`):
+
+```bash
+pytest -q /home/ubuntu/venom/modules/venom-module-brand-studio/tests
+```
+
+Recommended module-only gates:
+
+```bash
+cd /home/ubuntu/venom/modules/venom-module-brand-studio
+make pr-fast PYTHON=/home/ubuntu/venom/.venv/bin/python
+make check-new-code-coverage PYTHON=/home/ubuntu/venom/.venv/bin/python
+```
+
 ## Integrating with local Venom workspace
 In `/home/ubuntu/venom/.env`:
 
