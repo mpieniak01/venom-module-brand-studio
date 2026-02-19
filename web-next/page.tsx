@@ -986,16 +986,16 @@ export default function BrandStudioPage() {
         <p className="text-zinc-400">{t("subtitle")}</p>
       </div>
 
-      <section className="flex flex-wrap gap-2">
+      <section className="flex flex-wrap gap-2 border-b border-white/10">
         {(["radar", "config", "integrations"] as const).map((value) => (
           <button
             key={value}
             type="button"
             onClick={() => setTab(value)}
-            className={`rounded-xl border px-4 py-2 text-sm transition ${
+            className={`rounded-t-xl rounded-b-none px-4 py-3 text-sm font-medium transition ${
               tab === value
-                ? "border-cyan-400 bg-cyan-500/10 text-cyan-100"
-                : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
+                ? "border-b-2 border-emerald-400 bg-emerald-500/10 text-emerald-300"
+                : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
             }`}
           >
             {t(`tabs.${value}`)}
