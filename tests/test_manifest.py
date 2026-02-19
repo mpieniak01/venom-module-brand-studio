@@ -13,4 +13,8 @@ def test_module_manifest_required_fields() -> None:
     assert manifest["backend"]["min_core_version"]
     assert manifest["frontend"]["nav_path"] == "/brand-studio"
     assert manifest["frontend"]["feature_flag"] == "NEXT_PUBLIC_FEATURE_BRAND_STUDIO"
+    assert manifest["frontend"]["nav_label"] == "Brand Studio"
+    assert manifest["frontend"]["nav_labels"]["pl"] == "Brand Studio"
+    assert manifest["frontend"]["nav_labels"]["en"] == "Brand Studio"
+    assert manifest["frontend"]["nav_labels"]["de"] == "Brand Studio"
     assert manifest["frontend"]["component_import"]
