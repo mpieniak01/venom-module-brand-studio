@@ -56,5 +56,17 @@
   "integrations.key": "Klucz",
   "integrations.masked": "Sekret:",
   "integrations.test": "Test połączenia",
-  "config.editStrategy": "Strategia do edycji"
+  "config.editStrategy": "Strategia do edycji",
+  "queue.account": "Konto",
+  "accounts.title": "Konta kanałów",
+  "accounts.empty": "Brak kanałów lub kont.",
+  "accounts.count": "Konta",
+  "accounts.displayName": "Nazwa konta",
+  "accounts.target": "Target (repo/publication/subreddit)",
+  "accounts.add": "Dodaj konto",
+  "accounts.default": "domyślne",
+  "accounts.setDefault": "Ustaw domyślne",
+  "accounts.test": "Test konta",
+  "accounts.delete": "Usuń konto",
+  "accounts.validationName": "Podaj nazwę konta."
 }

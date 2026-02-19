@@ -56,5 +56,17 @@
   "integrations.key": "Key",
   "integrations.masked": "Secret:",
   "integrations.test": "Test connection",
-  "config.editStrategy": "Strategy to edit"
+  "config.editStrategy": "Strategy to edit",
+  "queue.account": "Account",
+  "accounts.title": "Channel accounts",
+  "accounts.empty": "No channels or accounts.",
+  "accounts.count": "Accounts",
+  "accounts.displayName": "Account name",
+  "accounts.target": "Target (repo/publication/subreddit)",
+  "accounts.add": "Add account",
+  "accounts.default": "default",
+  "accounts.setDefault": "Set default",
+  "accounts.test": "Test account",
+  "accounts.delete": "Delete account",
+  "accounts.validationName": "Provide account name."
 }

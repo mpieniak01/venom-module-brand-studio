@@ -56,5 +56,17 @@
   "integrations.key": "Schlüssel",
   "integrations.masked": "Geheimnis:",
   "integrations.test": "Verbindung testen",
-  "config.editStrategy": "Strategie zur Bearbeitung"
+  "config.editStrategy": "Strategie zur Bearbeitung",
+  "queue.account": "Konto",
+  "accounts.title": "Kanal-Konten",
+  "accounts.empty": "Keine Kanäle oder Konten.",
+  "accounts.count": "Konten",
+  "accounts.displayName": "Kontoname",
+  "accounts.target": "Ziel (Repo/Publication/Subreddit)",
+  "accounts.add": "Konto hinzufügen",
+  "accounts.default": "standard",
+  "accounts.setDefault": "Als Standard setzen",
+  "accounts.test": "Konto testen",
+  "accounts.delete": "Konto löschen",
+  "accounts.validationName": "Kontonamen angeben."
 }

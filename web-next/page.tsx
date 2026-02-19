@@ -8,7 +8,18 @@ import pl from "./i18n/pl.json";
 
 type Lang = "pl" | "en" | "de";
 type ApiLang = "pl" | "en" | "other";
-type Channel = "all" | "x" | "github" | "blog";
+type PublishChannel =
+  | "x"
+  | "github"
+  | "blog"
+  | "linkedin"
+  | "medium"
+  | "hf_blog"
+  | "hf_spaces"
+  | "reddit"
+  | "devto"
+  | "hashnode";
+type Channel = "all" | PublishChannel;
 type Tab = "radar" | "config" | "integrations";
 type DiscoveryMode = "stub" | "hybrid" | "live";
 type IntegrationId = "github_publish" | "rss" | "hn" | "arxiv" | "x";
@@ -31,7 +42,7 @@ type CandidatesResponse = {
 };
 
 type DraftVariant = {
-  channel: "x" | "github" | "blog";
+  channel: PublishChannel;
   language: "pl" | "en";
   content: string;
 };
@@ -45,7 +56,9 @@ type DraftBundle = {
 type QueueItem = {
   item_id: string;
   draft_id: string;
-  target_channel: "x" | "github" | "blog";
+  target_channel: PublishChannel;
+  account_id?: string | null;
+  account_display_name?: string | null;
   status: "draft" | "ready" | "queued" | "published" | "failed" | "cancelled";
   created_at: string;
   updated_at: string;
@@ -78,8 +91,9 @@ type StrategyConfig = {
   cache_ttl_seconds: number;
   min_score: number;
   limit: number;
-  active_channels: Array<"x" | "github" | "blog">;
+  active_channels: Array<PublishChannel>;
   draft_languages: Array<"pl" | "en">;
+  default_accounts: Partial<Record<PublishChannel, string>>;
 };
 
 type ConfigResponse = {
@@ -115,6 +129,45 @@ type IntegrationTestResponse = {
   message: string;
 };
 
+type ChannelDescriptor = {
+  id: PublishChannel;
+  accounts_count: number;
+  default_account_id?: string | null;
+};
+
+type ChannelsResponse = {
+  items: ChannelDescriptor[];
+};
+
+type ChannelAccount = {
+  account_id: string;
+  channel: PublishChannel;
+  display_name: string;
+  target?: string | null;
+  enabled: boolean;
+  is_default: boolean;
+  secret_status: "configured" | "missing" | "invalid";
+  capabilities: string[];
+};
+
+type ChannelAccountsResponse = {
+  channel: PublishChannel;
+  items: ChannelAccount[];
+};
+
+const CHANNELS: PublishChannel[] = [
+  "x",
+  "github",
+  "blog",
+  "linkedin",
+  "medium",
+  "hf_blog",
+  "hf_spaces",
+  "reddit",
+  "devto",
+  "hashnode",
+];
+
 const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
 const DEFAULT_FORM: StrategyConfig = {
@@ -127,6 +180,7 @@ const DEFAULT_FORM: StrategyConfig = {
   limit: 30,
   active_channels: ["x", "github", "blog"],
   draft_languages: ["pl", "en"],
+  default_accounts: {},
 };
 
 export default function BrandStudioPage() {
@@ -161,6 +215,17 @@ export default function BrandStudioPage() {
   const [integrationLoading, setIntegrationLoading] = useState(false);
   const [integrationError, setIntegrationError] = useState<string | null>(null);
   const [integrationTests, setIntegrationTests] = useState<Record<string, string>>({});
+  const [channelDescriptors, setChannelDescriptors] = useState<ChannelDescriptor[]>([]);
+  const [accountsByChannel, setAccountsByChannel] = useState<Partial<Record<PublishChannel, ChannelAccount[]>>>({});
+  const [selectedAccountByChannel, setSelectedAccountByChannel] = useState<
+    Partial<Record<PublishChannel, string>>
+  >({});
+  const [accountDraftDisplayNameByChannel, setAccountDraftDisplayNameByChannel] = useState<
+    Partial<Record<PublishChannel, string>>
+  >({});
+  const [accountDraftTargetByChannel, setAccountDraftTargetByChannel] = useState<
+    Partial<Record<PublishChannel, string>>
+  >({});
 
   useEffect(() => {
     const raw = (typeof navigator !== "undefined" ? navigator.language : "en").toLowerCase();
@@ -298,6 +363,50 @@ export default function BrandStudioPage() {
     }
   }, []);
 
+  const loadChannels = useCallback(async () => {
+    setIntegrationLoading(true);
+    setIntegrationError(null);
+    try {
+      const response = await fetch("/api/v1/brand-studio/channels", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as ChannelsResponse;
+      setChannelDescriptors(payload.items);
+
+      const accountPairs = await Promise.all(
+        payload.items.map(async (channel) => {
+          const accountsResponse = await fetch(
+            `/api/v1/brand-studio/channels/${channel.id}/accounts`,
+            { cache: "no-store" }
+          );
+          if (!accountsResponse.ok) {
+            throw new Error(`HTTP ${accountsResponse.status}`);
+          }
+          const accountsPayload = (await accountsResponse.json()) as ChannelAccountsResponse;
+          return [channel.id, accountsPayload.items] as const;
+        })
+      );
+
+      const nextAccountsByChannel: Partial<Record<PublishChannel, ChannelAccount[]>> = {};
+      const nextSelectedByChannel: Partial<Record<PublishChannel, string>> = {};
+      for (const [channelId, accounts] of accountPairs) {
+        nextAccountsByChannel[channelId] = accounts;
+        const selected =
+          accounts.find((item) => item.is_default)?.account_id ?? accounts[0]?.account_id;
+        if (selected) {
+          nextSelectedByChannel[channelId] = selected;
+        }
+      }
+      setAccountsByChannel(nextAccountsByChannel);
+      setSelectedAccountByChannel((previous) => ({ ...nextSelectedByChannel, ...previous }));
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setIntegrationLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCandidates();
   }, [loadCandidates]);
@@ -307,7 +416,8 @@ export default function BrandStudioPage() {
     void loadAudit();
     void loadConfig();
     void loadIntegrations();
-  }, [loadQueue, loadAudit, loadConfig, loadIntegrations]);
+    void loadChannels();
+  }, [loadQueue, loadAudit, loadConfig, loadIntegrations, loadChannels]);
 
   const stats = useMemo(() => {
     if (!items.length) {
@@ -363,6 +473,7 @@ export default function BrandStudioPage() {
       setQueueLoading(true);
       setQueueError(null);
       try {
+        const selectedAccountId = selectedAccountByChannel[variant.channel] ?? null;
         const response = await fetch(`/api/v1/brand-studio/drafts/${draft.draft_id}/queue`, {
           method: "POST",
           headers: {
@@ -372,6 +483,7 @@ export default function BrandStudioPage() {
           body: JSON.stringify({
             target_channel: variant.channel,
             target_language: variant.language,
+            account_id: selectedAccountId,
           }),
         });
         if (!response.ok) {
@@ -384,7 +496,7 @@ export default function BrandStudioPage() {
         setQueueLoading(false);
       }
     },
-    [draft, loadAudit, loadQueue]
+    [draft, loadAudit, loadQueue, selectedAccountByChannel]
   );
 
   const publishNow = useCallback(
@@ -429,6 +541,7 @@ export default function BrandStudioPage() {
         limit: configForm.limit,
         active_channels: configForm.active_channels,
         draft_languages: configForm.draft_languages,
+        default_accounts: configForm.default_accounts,
       };
       const response = await fetch("/api/v1/brand-studio/config", {
         method: "PUT",
@@ -473,6 +586,7 @@ export default function BrandStudioPage() {
           limit: configForm.limit,
           active_channels: configForm.active_channels,
           draft_languages: configForm.draft_languages,
+          default_accounts: configForm.default_accounts,
         }),
       });
       if (!response.ok) {
@@ -656,7 +770,149 @@ export default function BrandStudioPage() {
     [loadAudit, loadIntegrations]
   );
 
-  const toggleChannel = (value: "x" | "github" | "blog") => {
+  const createChannelAccount = useCallback(
+    async (channelId: PublishChannel) => {
+      const displayName = (accountDraftDisplayNameByChannel[channelId] ?? "").trim();
+      if (!displayName) {
+        setIntegrationError(t("accounts.validationName"));
+        return;
+      }
+      setIntegrationLoading(true);
+      setIntegrationError(null);
+      try {
+        const response = await fetch(`/api/v1/brand-studio/channels/${channelId}/accounts`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Authenticated-User": "local-user",
+          },
+          body: JSON.stringify({
+            display_name: displayName,
+            target: (accountDraftTargetByChannel[channelId] ?? "").trim() || null,
+            is_default: !accountsByChannel[channelId]?.length,
+            enabled: true,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        setAccountDraftDisplayNameByChannel((previous) => ({ ...previous, [channelId]: "" }));
+        setAccountDraftTargetByChannel((previous) => ({ ...previous, [channelId]: "" }));
+        await loadChannels();
+        await loadAudit();
+      } catch (err) {
+        setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+      } finally {
+        setIntegrationLoading(false);
+      }
+    },
+    [
+      accountDraftDisplayNameByChannel,
+      accountDraftTargetByChannel,
+      accountsByChannel,
+      loadAudit,
+      loadChannels,
+      t,
+    ]
+  );
+
+  const activateChannelAccount = useCallback(
+    async (channelId: PublishChannel, accountId: string) => {
+      setIntegrationLoading(true);
+      setIntegrationError(null);
+      try {
+        const response = await fetch(
+          `/api/v1/brand-studio/channels/${channelId}/accounts/${accountId}/activate`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Authenticated-User": "local-user",
+            },
+          }
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await loadChannels();
+        await loadAudit();
+      } catch (err) {
+        setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+      } finally {
+        setIntegrationLoading(false);
+      }
+    },
+    [loadAudit, loadChannels]
+  );
+
+  const testChannelAccount = useCallback(
+    async (channelId: PublishChannel, accountId: string) => {
+      setIntegrationLoading(true);
+      setIntegrationError(null);
+      try {
+        const response = await fetch(
+          `/api/v1/brand-studio/channels/${channelId}/accounts/${accountId}/test`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Authenticated-User": "local-user",
+            },
+          }
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = (await response.json()) as {
+          account_id: string;
+          status: string;
+          message: string;
+        };
+        setIntegrationTests((previous) => ({
+          ...previous,
+          [`${channelId}:${accountId}`]: `${payload.status}: ${payload.message}`,
+        }));
+        await loadChannels();
+        await loadAudit();
+      } catch (err) {
+        setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+      } finally {
+        setIntegrationLoading(false);
+      }
+    },
+    [loadAudit, loadChannels]
+  );
+
+  const deleteChannelAccount = useCallback(
+    async (channelId: PublishChannel, accountId: string) => {
+      setIntegrationLoading(true);
+      setIntegrationError(null);
+      try {
+        const response = await fetch(
+          `/api/v1/brand-studio/channels/${channelId}/accounts/${accountId}`,
+          {
+            method: "DELETE",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Authenticated-User": "local-user",
+            },
+          }
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await loadChannels();
+        await loadAudit();
+      } catch (err) {
+        setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+      } finally {
+        setIntegrationLoading(false);
+      }
+    },
+    [loadAudit, loadChannels]
+  );
+
+  const toggleChannel = (value: PublishChannel) => {
     setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.active_channels.includes(value);
@@ -854,6 +1110,32 @@ export default function BrandStudioPage() {
                       <p className="text-xs uppercase text-zinc-400">
                         {variant.channel} / {variant.language}
                       </p>
+                      {accountsByChannel[variant.channel]?.length ? (
+                        <label className="mt-2 block space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">{t("queue.account")}</span>
+                          <select
+                            value={
+                              selectedAccountByChannel[variant.channel] ??
+                              accountsByChannel[variant.channel]?.find((item) => item.is_default)?.account_id ??
+                              accountsByChannel[variant.channel]?.[0]?.account_id ??
+                              ""
+                            }
+                            onChange={(event) =>
+                              setSelectedAccountByChannel((previous) => ({
+                                ...previous,
+                                [variant.channel]: event.target.value,
+                              }))
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            {accountsByChannel[variant.channel]?.map((account) => (
+                              <option key={account.account_id} value={account.account_id}>
+                                {account.display_name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                       <p className="mt-1 text-sm text-zinc-200">{variant.content}</p>
                       <button
                         type="button"
@@ -879,6 +1161,11 @@ export default function BrandStudioPage() {
                     <p className="text-xs uppercase text-zinc-400">
                       {item.target_channel} / {item.status}
                     </p>
+                    {item.account_display_name ? (
+                      <p className="text-xs text-zinc-400">
+                        {t("queue.account")}: {item.account_display_name}
+                      </p>
+                    ) : null}
                     <p className="text-xs text-zinc-500">{item.item_id}</p>
                     <button
                       type="button"
@@ -1039,7 +1326,7 @@ export default function BrandStudioPage() {
             <div className="space-y-2">
               <p className="text-xs uppercase text-zinc-400">{t("config.channels")}</p>
               <div className="flex flex-wrap gap-2">
-                {(["x", "github", "blog"] as const).map((value) => (
+                {CHANNELS.map((value) => (
                   <button
                     key={value}
                     type="button"
@@ -1215,6 +1502,107 @@ export default function BrandStudioPage() {
                 {integrationTests[item.id] ? (
                   <p className="mt-2 text-xs text-cyan-200">{integrationTests[item.id]}</p>
                 ) : null}
+              </article>
+            ))}
+          </div>
+          <div className="space-y-3 pt-2">
+            <h3 className="text-base font-medium text-zinc-100">{t("accounts.title")}</h3>
+            {!channelDescriptors.length ? (
+              <p className="text-sm text-zinc-400">{t("accounts.empty")}</p>
+            ) : null}
+            {channelDescriptors.map((descriptor) => (
+              <article key={descriptor.id} className="rounded-xl border border-zinc-800 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-sm font-medium uppercase text-zinc-200">{descriptor.id}</h4>
+                  <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
+                    {t("accounts.count")}: {descriptor.accounts_count}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+                  <input
+                    value={accountDraftDisplayNameByChannel[descriptor.id] ?? ""}
+                    onChange={(event) =>
+                      setAccountDraftDisplayNameByChannel((previous) => ({
+                        ...previous,
+                        [descriptor.id]: event.target.value,
+                      }))
+                    }
+                    placeholder={t("accounts.displayName")}
+                    className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  />
+                  <input
+                    value={accountDraftTargetByChannel[descriptor.id] ?? ""}
+                    onChange={(event) =>
+                      setAccountDraftTargetByChannel((previous) => ({
+                        ...previous,
+                        [descriptor.id]: event.target.value,
+                      }))
+                    }
+                    placeholder={t("accounts.target")}
+                    className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void createChannelAccount(descriptor.id)}
+                    disabled={integrationLoading}
+                    className="rounded-lg border border-emerald-500/40 px-3 py-2 text-xs text-emerald-100 disabled:opacity-50"
+                  >
+                    {t("accounts.add")}
+                  </button>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {(accountsByChannel[descriptor.id] ?? []).map((account) => (
+                    <div key={account.account_id} className="rounded-lg border border-zinc-800/80 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm text-zinc-100">
+                          {account.display_name}
+                          {account.is_default ? (
+                            <span className="ml-2 rounded bg-cyan-900/40 px-2 py-0.5 text-[10px] uppercase text-cyan-100">
+                              {t("accounts.default")}
+                            </span>
+                          ) : null}
+                        </p>
+                        <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
+                          {account.secret_status}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-400">
+                        {t("accounts.target")}: {account.target || "-"}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void activateChannelAccount(descriptor.id, account.account_id)}
+                          disabled={integrationLoading}
+                          className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
+                        >
+                          {t("accounts.setDefault")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void testChannelAccount(descriptor.id, account.account_id)}
+                          disabled={integrationLoading}
+                          className="rounded-lg border border-violet-500/40 px-2 py-1 text-[11px] text-violet-100 disabled:opacity-50"
+                        >
+                          {t("accounts.test")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteChannelAccount(descriptor.id, account.account_id)}
+                          disabled={integrationLoading}
+                          className="rounded-lg border border-rose-500/40 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
+                        >
+                          {t("accounts.delete")}
+                        </button>
+                      </div>
+                      {integrationTests[`${descriptor.id}:${account.account_id}`] ? (
+                        <p className="mt-2 text-xs text-cyan-200">
+                          {integrationTests[`${descriptor.id}:${account.account_id}`]}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               </article>
             ))}
           </div>
