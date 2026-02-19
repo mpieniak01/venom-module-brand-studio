@@ -838,6 +838,14 @@ class BrandStudioService:
                     status = "invalid"
                     success = False
                     message = f"GitHub test failed: {exc}"
+            if channel == "devto" and success and self._devto_publisher is not None:
+                try:
+                    self._devto_publisher.validate_connection()
+                    message = "Dev.to API reachable for account"
+                except Exception as exc:
+                    status = "invalid"
+                    success = False
+                    message = f"Dev.to test failed: {exc}"
 
             tested_at = _utcnow()
             current[account_id] = account.model_copy(update={"secret_status": status})
@@ -977,41 +985,47 @@ class BrandStudioService:
         actor: str,
         account_id: str | None = None,
     ) -> PublishQueueItem:
-        bundle = self._drafts.get(draft_id)
-        if bundle is None:
-            raise KeyError("draft_not_found")
+        with self._lock:
+            bundle = self._drafts.get(draft_id)
+            if bundle is None:
+                raise KeyError("draft_not_found")
 
-        candidate_variant = self._choose_variant(
-            bundle=bundle, target_channel=target_channel, target_language=target_language
-        )
-        if candidate_variant is None:
-            raise KeyError("draft_variant_not_found")
+            candidate_variant = self._choose_variant(
+                bundle=bundle, target_channel=target_channel, target_language=target_language
+            )
+            if candidate_variant is None:
+                raise KeyError("draft_variant_not_found")
 
-        payload = payload_override or candidate_variant.content
-        selected_account = self._resolve_account_for_queue(
-            target_channel=target_channel, account_id=account_id
-        )
-        now = _utcnow()
-        item = PublishQueueItem(
-            item_id=f"queue-{uuid4().hex[:10]}",
-            draft_id=draft_id,
-            target_channel=target_channel,
-            target_language=candidate_variant.language,
-            target_repo=target_repo
-            or (selected_account.target if selected_account else None)
-            or os.getenv("BRAND_TARGET_REPO"),
-            target_path=target_path or _default_target_path(target_channel),
-            account_id=selected_account.account_id if selected_account else None,
-            account_display_name=selected_account.display_name if selected_account else None,
-            payload=payload,
-            status="queued",
-            created_at=now,
-            updated_at=now,
-        )
-        self._queue[item.item_id] = item
-        self._persist_runtime_state()
-        self._add_audit(actor=actor, action="queue.create", status="queued", payload=item.item_id)
-        return item
+            payload = payload_override or candidate_variant.content
+            selected_account = self._resolve_account_for_queue(
+                target_channel=target_channel, account_id=account_id
+            )
+            now = _utcnow()
+            item = PublishQueueItem(
+                item_id=f"queue-{uuid4().hex[:10]}",
+                draft_id=draft_id,
+                target_channel=target_channel,
+                target_language=candidate_variant.language,
+                target_repo=target_repo
+                or (selected_account.target if selected_account else None)
+                or os.getenv("BRAND_TARGET_REPO"),
+                target_path=target_path or _default_target_path(target_channel),
+                account_id=selected_account.account_id if selected_account else None,
+                account_display_name=selected_account.display_name if selected_account else None,
+                payload=payload,
+                status="queued",
+                created_at=now,
+                updated_at=now,
+            )
+            self._queue[item.item_id] = item
+            self._persist_runtime_state()
+            self._add_audit(
+                actor=actor,
+                action="queue.create",
+                status="queued",
+                payload=item.item_id,
+            )
+            return item
 
     def _resolve_account_for_queue(
         self,
@@ -1024,7 +1038,10 @@ class BrandStudioService:
             return None
         accounts = self._accounts.get(channel, {})
         if account_id:
-            return accounts.get(account_id)
+            selected = accounts.get(account_id)
+            if selected is None:
+                raise ChannelAccountNotFoundError("account_not_found")
+            return selected
         strategy = self._active_strategy()
         strategy_default = strategy.default_accounts.get(channel)
         if strategy_default and strategy_default in accounts:
@@ -1052,165 +1069,166 @@ class BrandStudioService:
         confirm_publish: bool,
         actor: str,
     ) -> PublishResult:
-        item = self._queue.get(item_id)
-        if item is None:
-            raise KeyError("queue_item_not_found")
-        if not confirm_publish:
-            raise ValueError("confirm_publish_required")
-        if item.status == "published":
-            raise ValueError("queue_item_already_published")
+        with self._lock:
+            item = self._queue.get(item_id)
+            if item is None:
+                raise KeyError("queue_item_not_found")
+            if not confirm_publish:
+                raise ValueError("confirm_publish_required")
+            if item.status == "published":
+                raise ValueError("queue_item_already_published")
 
-        now = _utcnow()
-        if item.target_channel in {"github", "blog"}:
-            if self._publisher is None:
-                item.status = "failed"
-                item.updated_at = now
-                self._persist_runtime_state()
-                self._add_audit(
-                    actor=actor,
-                    action="queue.publish",
-                    status="failed",
-                    payload=f"{item_id}:github_not_configured",
-                )
-                return PublishResult(
-                    success=False,
-                    status="failed",
-                    published_at=now,
-                    message=(
-                        "GitHub publisher not configured "
-                        "(set GITHUB_TOKEN_BRAND and BRAND_TARGET_REPO)"
-                    ),
-                )
-            try:
-                result = self._publisher.publish_markdown(
-                    path=item.target_path or _default_target_path(item.target_channel),
-                    content=item.payload,
-                    title=f"{item.target_channel}-{item.item_id}",
-                )
+            now = _utcnow()
+            if item.target_channel in {"github", "blog"}:
+                if self._publisher is None:
+                    item.status = "failed"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="failed",
+                        payload=f"{item_id}:github_not_configured",
+                    )
+                    return PublishResult(
+                        success=False,
+                        status="failed",
+                        published_at=now,
+                        message=(
+                            "GitHub publisher not configured "
+                            "(set GITHUB_TOKEN_BRAND and BRAND_TARGET_REPO)"
+                        ),
+                    )
+                try:
+                    result = self._publisher.publish_markdown(
+                        path=item.target_path or _default_target_path(item.target_channel),
+                        content=item.payload,
+                        title=f"{item.target_channel}-{item.item_id}",
+                    )
+                    item.status = "published"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="published",
+                        payload=item_id,
+                    )
+                    return PublishResult(
+                        success=True,
+                        status="published",
+                        published_at=now,
+                        external_id=result.external_id,
+                        url=result.url,
+                        message=result.message,
+                    )
+                except Exception as exc:
+                    item.status = "failed"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="failed",
+                        payload=f"{item_id}:{exc}",
+                    )
+                    return PublishResult(
+                        success=False,
+                        status="failed",
+                        published_at=now,
+                        message=f"GitHub publish failed: {exc}",
+                    )
+
+            if item.target_channel == "devto":
+                if self._devto_publisher is None:
+                    item.status = "failed"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="failed",
+                        payload=f"{item_id}:devto_not_configured",
+                    )
+                    return PublishResult(
+                        success=False,
+                        status="failed",
+                        published_at=now,
+                        message="Dev.to publisher not configured (set DEVTO_API_KEY)",
+                    )
+                try:
+                    publish_result = self._devto_publisher.publish_markdown(
+                        title=f"{item.target_channel}-{item.item_id}",
+                        content=item.payload,
+                        target=item.target_repo,
+                    )
+                    item.status = "published"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="published",
+                        payload=item_id,
+                    )
+                    return PublishResult(
+                        success=True,
+                        status="published",
+                        published_at=now,
+                        external_id=publish_result.external_id,
+                        url=publish_result.url,
+                        message=publish_result.message,
+                    )
+                except Exception as exc:
+                    item.status = "failed"
+                    item.updated_at = now
+                    self._persist_runtime_state()
+                    self._add_audit(
+                        actor=actor,
+                        action="queue.publish",
+                        status="failed",
+                        payload=f"{item_id}:{exc}",
+                    )
+                    return PublishResult(
+                        success=False,
+                        status="failed",
+                        published_at=now,
+                        message=f"Dev.to publish failed: {exc}",
+                    )
+
+            if item.target_channel == "x":
                 item.status = "published"
                 item.updated_at = now
                 self._persist_runtime_state()
                 self._add_audit(
                     actor=actor,
                     action="queue.publish",
-                    status="published",
-                    payload=item_id,
+                    status="manual",
+                    payload=f"{item_id}:{item.target_channel}",
                 )
                 return PublishResult(
                     success=True,
                     status="published",
                     published_at=now,
-                    external_id=result.external_id,
-                    url=result.url,
-                    message=result.message,
-                )
-            except Exception as exc:
-                item.status = "failed"
-                item.updated_at = now
-                self._persist_runtime_state()
-                self._add_audit(
-                    actor=actor,
-                    action="queue.publish",
-                    status="failed",
-                    payload=f"{item_id}:{exc}",
-                )
-                return PublishResult(
-                    success=False,
-                    status="failed",
-                    published_at=now,
-                    message=f"GitHub publish failed: {exc}",
+                    external_id=f"manual-{item_id}",
+                    message="X publish marked as manual-complete in MVP",
                 )
 
-        if item.target_channel == "devto":
-            if self._devto_publisher is None:
-                item.status = "failed"
-                item.updated_at = now
-                self._persist_runtime_state()
-                self._add_audit(
-                    actor=actor,
-                    action="queue.publish",
-                    status="failed",
-                    payload=f"{item_id}:devto_not_configured",
-                )
-                return PublishResult(
-                    success=False,
-                    status="failed",
-                    published_at=now,
-                    message="Dev.to publisher not configured (set DEVTO_API_KEY)",
-                )
-            try:
-                publish_result = self._devto_publisher.publish_markdown(
-                    title=f"{item.target_channel}-{item.item_id}",
-                    content=item.payload,
-                    target=item.target_repo,
-                )
-                item.status = "published"
-                item.updated_at = now
-                self._persist_runtime_state()
-                self._add_audit(
-                    actor=actor,
-                    action="queue.publish",
-                    status="published",
-                    payload=item_id,
-                )
-                return PublishResult(
-                    success=True,
-                    status="published",
-                    published_at=now,
-                    external_id=publish_result.external_id,
-                    url=publish_result.url,
-                    message=publish_result.message,
-                )
-            except Exception as exc:
-                item.status = "failed"
-                item.updated_at = now
-                self._persist_runtime_state()
-                self._add_audit(
-                    actor=actor,
-                    action="queue.publish",
-                    status="failed",
-                    payload=f"{item_id}:{exc}",
-                )
-                return PublishResult(
-                    success=False,
-                    status="failed",
-                    published_at=now,
-                    message=f"Dev.to publish failed: {exc}",
-                )
-
-        if item.target_channel == "x":
-            item.status = "published"
+            item.status = "failed"
             item.updated_at = now
             self._persist_runtime_state()
             self._add_audit(
                 actor=actor,
                 action="queue.publish",
-                status="manual",
-                payload=f"{item_id}:{item.target_channel}",
+                status="failed",
+                payload=f"{item_id}:{item.target_channel}_connector_not_implemented",
             )
             return PublishResult(
-                success=True,
-                status="published",
+                success=False,
+                status="failed",
                 published_at=now,
-                external_id=f"manual-{item_id}",
-                message="X publish marked as manual-complete in MVP",
+                message=f"Connector for channel '{item.target_channel}' is not implemented yet",
             )
-
-        item.status = "failed"
-        item.updated_at = now
-        self._persist_runtime_state()
-        self._add_audit(
-            actor=actor,
-            action="queue.publish",
-            status="failed",
-            payload=f"{item_id}:{item.target_channel}_connector_not_implemented",
-        )
-        return PublishResult(
-            success=False,
-            status="failed",
-            published_at=now,
-            message=f"Connector for channel '{item.target_channel}' is not implemented yet",
-        )
 
     def queue_items(self) -> list[PublishQueueItem]:
         with self._lock:

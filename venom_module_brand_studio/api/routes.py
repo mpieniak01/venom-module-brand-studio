@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -43,6 +44,17 @@ from venom_module_brand_studio.services.service import (
 )
 
 router = APIRouter(prefix="/api/v1/brand-studio", tags=["brand-studio"])
+
+
+@contextmanager
+def _account_not_found_as_http_404():
+    try:
+        yield
+    except ChannelAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        ) from exc
 
 
 @router.get("/health")
@@ -212,7 +224,7 @@ async def generate_draft(
 @router.post(
     "/drafts/{draft_id}/queue",
     response_model=QueueCreateResponse,
-    responses={404: {"description": "Draft or variant not found"}},
+    responses={404: {"description": "Draft, variant or account not found"}},
 )
 async def queue_draft(
     draft_id: str,
@@ -223,16 +235,17 @@ async def queue_draft(
     _autonomy: AutonomyDep,
 ) -> QueueCreateResponse:
     try:
-        item = service.queue_draft(
-            draft_id=draft_id,
-            target_channel=payload.target_channel,
-            account_id=payload.account_id,
-            target_language=payload.target_language,
-            target_repo=payload.target_repo,
-            target_path=payload.target_path,
-            payload_override=payload.payload_override,
-            actor=actor,
-        )
+        with _account_not_found_as_http_404():
+            item = service.queue_draft(
+                draft_id=draft_id,
+                target_channel=payload.target_channel,
+                account_id=payload.account_id,
+                target_language=payload.target_language,
+                target_repo=payload.target_repo,
+                target_path=payload.target_path,
+                payload_override=payload.payload_override,
+                actor=actor,
+            )
     except KeyError as exc:
         if str(exc).strip("'") in {"draft_not_found", "draft_variant_not_found"}:
             raise HTTPException(
@@ -522,13 +535,8 @@ async def update_channel_account(
     actor: ActorDep,
     _autonomy: AutonomyDep,
 ) -> ChannelAccountResponse:
-    try:
+    with _account_not_found_as_http_404():
         item = service.update_channel_account(channel, account_id, payload, actor=actor)
-    except ChannelAccountNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
-        ) from exc
     return ChannelAccountResponse(item=item)
 
 
@@ -545,13 +553,8 @@ async def delete_channel_account(
     actor: ActorDep,
     _autonomy: AutonomyDep,
 ) -> None:
-    try:
+    with _account_not_found_as_http_404():
         service.delete_channel_account(channel, account_id, actor=actor)
-    except ChannelAccountNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
-        ) from exc
 
 
 @router.post(
@@ -567,13 +570,8 @@ async def activate_channel_account(
     actor: ActorDep,
     _autonomy: AutonomyDep,
 ) -> ChannelAccountResponse:
-    try:
+    with _account_not_found_as_http_404():
         item = service.activate_channel_account(channel, account_id, actor=actor)
-    except ChannelAccountNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
-        ) from exc
     return ChannelAccountResponse(item=item)
 
 
@@ -590,10 +588,5 @@ async def test_channel_account(
     actor: ActorDep,
     _autonomy: AutonomyDep,
 ) -> ChannelAccountTestResponse:
-    try:
+    with _account_not_found_as_http_404():
         return service.test_channel_account(channel, account_id, actor=actor)
-    except ChannelAccountNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
-        ) from exc

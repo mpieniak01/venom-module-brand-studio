@@ -149,6 +149,25 @@ def test_404_errors_for_missing_resources() -> None:
     assert publish_response.status_code == 404
 
 
+def test_queue_draft_returns_404_for_unknown_account_id() -> None:
+    client = build_client()
+    candidate_id = client.get("/api/v1/brand-studio/sources/candidates").json()["items"][0]["id"]
+
+    draft_payload = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={"candidate_id": candidate_id, "channels": ["devto"], "languages": ["pl"]},
+        headers=AUTH_HEADERS,
+    ).json()
+
+    response = client.post(
+        f"/api/v1/brand-studio/drafts/{draft_payload['draft_id']}/queue",
+        json={"target_channel": "devto", "account_id": "missing-account"},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Account not found"
+
+
 def test_publish_conflict_when_item_already_published() -> None:
     client = build_client()
 

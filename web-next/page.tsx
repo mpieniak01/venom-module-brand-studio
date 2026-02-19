@@ -411,7 +411,21 @@ export default function BrandStudioPage() {
         }
       }
       setAccountsByChannel(nextAccountsByChannel);
-      setSelectedAccountByChannel((previous) => ({ ...nextSelectedByChannel, ...previous }));
+      setSelectedAccountByChannel((previous) => {
+        const validatedPrevious: Partial<Record<PublishChannel, string>> = {};
+        for (const [channelId, accounts] of Object.entries(
+          nextAccountsByChannel
+        ) as [PublishChannel, ChannelAccount[]][]) {
+          const prevSelected = previous[channelId];
+          if (
+            prevSelected &&
+            accounts.some((account) => account.account_id === prevSelected)
+          ) {
+            validatedPrevious[channelId] = prevSelected;
+          }
+        }
+        return { ...nextSelectedByChannel, ...validatedPrevious };
+      });
     } catch (err) {
       setIntegrationError(err instanceof Error ? err.message : "unknown_error");
     } finally {
@@ -477,7 +491,7 @@ export default function BrandStudioPage() {
     } finally {
       setDraftLoading(false);
     }
-  }, [apiLang, channel, loadAudit, selectedCandidateId]);
+  }, [apiLang, channel, configForm.active_channels, loadAudit, selectedCandidateId]);
 
   const queueVariant = useCallback(
     async (variant: DraftVariant) => {

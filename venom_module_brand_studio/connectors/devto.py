@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -82,7 +83,9 @@ class DevtoPublisher:
         }
         # Optional hint for operator-facing grouping (not a secret).
         if target:
-            article_payload["canonical_url"] = f"https://dev.to/{target}"
+            normalized_target = _normalize_devto_target(target)
+            if normalized_target:
+                article_payload["canonical_url"] = f"https://dev.to/{normalized_target}"
 
         response = _request_json(
             "POST",
@@ -97,3 +100,13 @@ class DevtoPublisher:
             url=article_url or None,
             message="Published to Dev.to",
         )
+
+
+def _normalize_devto_target(target: str) -> str | None:
+    value = target.strip().strip("/")
+    if not value:
+        return None
+    # Allow only safe dev.to username/path slugs.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", value):
+        return None
+    return value

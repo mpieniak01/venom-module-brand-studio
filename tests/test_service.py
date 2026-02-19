@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from venom_module_brand_studio.api.schemas import (
     ChannelAccountCreateRequest,
     ChannelAccountUpdateRequest,
@@ -10,7 +12,11 @@ from venom_module_brand_studio.api.schemas import (
     StrategyUpdateRequest,
 )
 from venom_module_brand_studio.connectors.github import GitHubPublishResult
-from venom_module_brand_studio.services.service import BrandStudioService, _canonical_url
+from venom_module_brand_studio.services.service import (
+    BrandStudioService,
+    ChannelAccountNotFoundError,
+    _canonical_url,
+)
 
 
 def test_canonical_url_removes_tracking_params() -> None:
@@ -403,6 +409,38 @@ def test_channel_accounts_lifecycle_and_queue_binding(monkeypatch, tmp_path: Pat
 
     service.delete_channel_account("devto", created.account_id, actor="tester")
     assert service.channel_accounts("devto").items == []
+
+
+def test_queue_draft_raises_for_unknown_explicit_account_id(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    service = BrandStudioService()
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+
+    with pytest.raises(ChannelAccountNotFoundError):
+        service.queue_draft(
+            draft_id=draft.draft_id,
+            target_channel="devto",
+            account_id="missing-account",
+            target_language="pl",
+            target_repo=None,
+            target_path=None,
+            payload_override=None,
+            actor="tester",
+        )
 
 
 def test_publish_devto_channel_with_connector(monkeypatch, tmp_path: Path) -> None:

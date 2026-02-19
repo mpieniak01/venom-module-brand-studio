@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from venom_module_brand_studio.connectors import github, sources
+from venom_module_brand_studio.connectors import devto, github, sources
+from venom_module_brand_studio.connectors.devto import DevtoPublisher, _normalize_devto_target
 from venom_module_brand_studio.connectors.github import GitHubPublisher
 
 
@@ -126,3 +127,70 @@ def test_sources_fetchers(monkeypatch) -> None:
     assert gh_items[0]["source"] == "github"
     assert hn_items[0]["source"] == "hn"
     assert arxiv_items[0]["source"] == "arxiv"
+
+
+def test_devto_publisher_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("DEVTO_API_KEY", raising=False)
+    assert DevtoPublisher.from_env() is None
+
+    monkeypatch.setenv("DEVTO_API_KEY", "devto-key")
+    publisher = DevtoPublisher.from_env()
+    assert publisher is not None
+    assert publisher.api_key == "devto-key"
+
+
+def test_devto_validate_connection(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_request_json(method: str, url: str, *, api_key: str, payload=None):  # noqa: ANN001
+        calls.append((method, url))
+        assert api_key == "devto-key"
+        assert payload is None
+        return {"ok": True}
+
+    monkeypatch.setattr(devto, "_request_json", fake_request_json)
+    publisher = DevtoPublisher(api_key="devto-key")
+    assert publisher.validate_connection() is True
+    assert calls == [("GET", "https://dev.to/api/articles/me/all?per_page=1")]
+
+
+def test_devto_publish_markdown_sanitizes_target(monkeypatch) -> None:
+    captured_payload: dict[str, object] = {}
+
+    def fake_request_json(method: str, url: str, *, api_key: str, payload=None):  # noqa: ANN001
+        assert method == "POST"
+        assert url == "https://dev.to/api/articles"
+        assert api_key == "devto-key"
+        assert isinstance(payload, dict)
+        captured_payload.update(payload)
+        return {"id": 7, "url": "https://dev.to/example/post"}
+
+    monkeypatch.setattr(devto, "_request_json", fake_request_json)
+    publisher = DevtoPublisher(api_key="devto-key")
+
+    result = publisher.publish_markdown(
+        title="Title",
+        content="Body",
+        target="safe-user",
+    )
+    assert result.external_id == "devto-7"
+    assert result.url == "https://dev.to/example/post"
+
+    article = captured_payload["article"]
+    assert isinstance(article, dict)
+    assert article["canonical_url"] == "https://dev.to/safe-user"
+
+    publisher.publish_markdown(
+        title="Title2",
+        content="Body2",
+        target="https://evil.example/x?y=1",
+    )
+    article = captured_payload["article"]
+    assert isinstance(article, dict)
+    assert "canonical_url" not in article
+
+
+def test_normalize_devto_target() -> None:
+    assert _normalize_devto_target(" user-name ") == "user-name"
+    assert _normalize_devto_target("/org_name/team/") == "org_name/team"
+    assert _normalize_devto_target("https://evil.example/x") is None
