@@ -34,6 +34,14 @@ from venom_module_brand_studio.connectors.sources import (
 )
 
 
+class StrategyNotFoundError(KeyError):
+    pass
+
+
+class LastStrategyDeletionError(ValueError):
+    pass
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -396,15 +404,12 @@ class BrandStudioService:
         if payload.base_strategy_id:
             base_candidate = self._strategies.get(payload.base_strategy_id)
             if base_candidate is None:
-                raise KeyError("strategy_not_found")
+                raise StrategyNotFoundError("strategy_not_found")
             base = base_candidate
 
         strategy_id = f"strategy-{uuid4().hex[:8]}"
-        created = base.model_copy(update={"id": strategy_id, "name": payload.name})
-        for key, value in payload.model_dump(exclude_none=True).items():
-            if key in {"name", "base_strategy_id"}:
-                continue
-            created = created.model_copy(update={key: value})
+        updates = payload.model_dump(exclude_none=True, exclude={"name", "base_strategy_id"})
+        created = base.model_copy(update={"id": strategy_id, "name": payload.name, **updates})
 
         self._strategies[created.id] = created
         self._persist_runtime_state()
@@ -420,7 +425,7 @@ class BrandStudioService:
     ) -> StrategyConfig:
         current = self._strategies.get(strategy_id)
         if current is None:
-            raise KeyError("strategy_not_found")
+            raise StrategyNotFoundError("strategy_not_found")
         updates = payload.model_dump(exclude_none=True)
         updated = current.model_copy(update=updates)
         self._strategies[strategy_id] = updated
@@ -430,9 +435,9 @@ class BrandStudioService:
 
     def delete_strategy(self, strategy_id: str, *, actor: str) -> None:
         if strategy_id not in self._strategies:
-            raise KeyError("strategy_not_found")
+            raise StrategyNotFoundError("strategy_not_found")
         if len(self._strategies) == 1:
-            raise ValueError("last_strategy_cannot_be_deleted")
+            raise LastStrategyDeletionError("last_strategy_cannot_be_deleted")
         del self._strategies[strategy_id]
         if self._active_strategy_id == strategy_id:
             self._active_strategy_id = next(iter(self._strategies.keys()))
@@ -442,7 +447,7 @@ class BrandStudioService:
     def activate_strategy(self, strategy_id: str, *, actor: str) -> StrategyConfig:
         strategy = self._strategies.get(strategy_id)
         if strategy is None:
-            raise KeyError("strategy_not_found")
+            raise StrategyNotFoundError("strategy_not_found")
         self._active_strategy_id = strategy_id
         self._persist_runtime_state()
         self._add_audit(actor=actor, action="strategy.activate", status="ok", payload=strategy_id)

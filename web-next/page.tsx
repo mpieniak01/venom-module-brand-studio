@@ -656,7 +656,7 @@ export default function BrandStudioPage() {
       const next = exists
         ? previous.active_channels.filter((item) => item !== value)
         : [...previous.active_channels, value];
-      return { ...previous, active_channels: next.length ? next : previous.active_channels };
+      return { ...previous, active_channels: next };
     });
   };
 
@@ -666,7 +666,7 @@ export default function BrandStudioPage() {
       const next = exists
         ? previous.draft_languages.filter((item) => item !== value)
         : [...previous.draft_languages, value];
-      return { ...previous, draft_languages: next.length ? next : previous.draft_languages };
+      return { ...previous, draft_languages: next };
     });
   };
 
