@@ -72,6 +72,16 @@ SUPPORTED_CHANNELS: tuple[ChannelId, ...] = (
     "devto",
     "hashnode",
 )
+REAL_PUBLISH_CHANNELS: tuple[ChannelId, ...] = ("github", "blog", "devto")
+MANUAL_PUBLISH_CHANNELS: tuple[ChannelId, ...] = ("x",)
+PLANNED_PUBLISH_CHANNELS: tuple[ChannelId, ...] = (
+    "linkedin",
+    "medium",
+    "hf_blog",
+    "hf_spaces",
+    "reddit",
+    "hashnode",
+)
 
 
 def _utcnow() -> datetime:
@@ -486,11 +496,11 @@ class BrandStudioService:
         return "invalid"
 
     def _capabilities_for_channel(self, channel: ChannelId) -> list[str]:
-        if channel in {"github", "blog"}:
+        if channel in REAL_PUBLISH_CHANNELS:
             return ["publish_markdown", "queue"]
-        if channel in {"x", "linkedin", "reddit", "devto", "hashnode", "medium"}:
+        if channel in MANUAL_PUBLISH_CHANNELS:
             return ["manual_publish_mvp", "queue"]
-        if channel in {"hf_blog", "hf_spaces"}:
+        if channel in PLANNED_PUBLISH_CHANNELS:
             return ["planned_connector", "queue"]
         return ["queue"]
 
@@ -1168,21 +1178,38 @@ class BrandStudioService:
                     message=f"Dev.to publish failed: {exc}",
                 )
 
-        item.status = "published"
+        if item.target_channel == "x":
+            item.status = "published"
+            item.updated_at = now
+            self._persist_runtime_state()
+            self._add_audit(
+                actor=actor,
+                action="queue.publish",
+                status="manual",
+                payload=f"{item_id}:{item.target_channel}",
+            )
+            return PublishResult(
+                success=True,
+                status="published",
+                published_at=now,
+                external_id=f"manual-{item_id}",
+                message="X publish marked as manual-complete in MVP",
+            )
+
+        item.status = "failed"
         item.updated_at = now
         self._persist_runtime_state()
         self._add_audit(
             actor=actor,
             action="queue.publish",
-            status="manual",
-            payload=f"{item_id}:{item.target_channel}",
+            status="failed",
+            payload=f"{item_id}:{item.target_channel}_connector_not_implemented",
         )
         return PublishResult(
-            success=True,
-            status="published",
+            success=False,
+            status="failed",
             published_at=now,
-            external_id=f"manual-{item_id}",
-            message=f"{item.target_channel} publish marked as manual-complete in MVP",
+            message=f"Connector for channel '{item.target_channel}' is not implemented yet",
         )
 
     def queue_items(self) -> list[PublishQueueItem]:
@@ -1278,9 +1305,13 @@ class BrandStudioService:
                 id="reddit_publish",
                 name="Reddit publish",
                 requires_key=True,
-                status="configured" if reddit_client_id and reddit_client_secret else "missing",
+                status=(
+                    "invalid"
+                    if reddit_client_id and reddit_client_secret
+                    else "missing"
+                ),
                 details=(
-                    "Reddit credentials present"
+                    "Credentials present, connector not implemented yet"
                     if reddit_client_id and reddit_client_secret
                     else "Missing REDDIT_CLIENT_ID or REDDIT_CLIENT_SECRET"
                 ),
@@ -1291,9 +1322,9 @@ class BrandStudioService:
                 id="hashnode_publish",
                 name="Hashnode publish",
                 requires_key=True,
-                status="configured" if hashnode_token else "missing",
+                status="invalid" if hashnode_token else "missing",
                 details=(
-                    "Hashnode token present"
+                    "Token present, connector not implemented yet"
                     if hashnode_token
                     else "Missing HASHNODE_TOKEN"
                 ),
@@ -1304,9 +1335,9 @@ class BrandStudioService:
                 id="linkedin_publish",
                 name="LinkedIn publish",
                 requires_key=True,
-                status="configured" if linkedin_token else "missing",
+                status="invalid" if linkedin_token else "missing",
                 details=(
-                    "LinkedIn token present (connector planned)"
+                    "Token present, connector not implemented yet"
                     if linkedin_token
                     else "Missing LINKEDIN_ACCESS_TOKEN"
                 ),
@@ -1317,9 +1348,9 @@ class BrandStudioService:
                 id="medium_publish",
                 name="Medium publish",
                 requires_key=True,
-                status="configured" if medium_token else "missing",
+                status="invalid" if medium_token else "missing",
                 details=(
-                    "Medium token present (connector planned)"
+                    "Token present, connector not implemented yet"
                     if medium_token
                     else "Missing MEDIUM_TOKEN"
                 ),
@@ -1330,9 +1361,9 @@ class BrandStudioService:
                 id="hf_blog_publish",
                 name="HF Blog publish",
                 requires_key=True,
-                status="configured" if hf_token else "missing",
+                status="invalid" if hf_token else "missing",
                 details=(
-                    "HF token present (connector planned)"
+                    "Token present, connector not implemented yet"
                     if hf_token
                     else "Missing HF_TOKEN"
                 ),
@@ -1343,9 +1374,9 @@ class BrandStudioService:
                 id="hf_spaces_publish",
                 name="HF Spaces publish",
                 requires_key=True,
-                status="configured" if hf_token else "missing",
+                status="invalid" if hf_token else "missing",
                 details=(
-                    "HF token present (connector planned)"
+                    "Token present, connector not implemented yet"
                     if hf_token
                     else "Missing HF_TOKEN"
                 ),
@@ -1418,45 +1449,45 @@ class BrandStudioService:
                 client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
                 client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
                 if client_id and client_secret:
-                    status = "configured"
-                    success = True
-                    message = "Credentials present (connector planned)"
+                    status = "invalid"
+                    success = False
+                    message = "Credentials present, connector not implemented yet"
                 else:
                     status = "missing"
                     message = "Missing REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"
             elif integration_id == "hashnode_publish":
                 token = (os.getenv("HASHNODE_TOKEN") or "").strip()
                 if token:
-                    status = "configured"
-                    success = True
-                    message = "Token present (connector planned)"
+                    status = "invalid"
+                    success = False
+                    message = "Token present, connector not implemented yet"
                 else:
                     status = "missing"
                     message = "Missing HASHNODE_TOKEN"
             elif integration_id == "linkedin_publish":
                 token = (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip()
                 if token:
-                    status = "configured"
-                    success = True
-                    message = "Token present (connector planned)"
+                    status = "invalid"
+                    success = False
+                    message = "Token present, connector not implemented yet"
                 else:
                     status = "missing"
                     message = "Missing LINKEDIN_ACCESS_TOKEN"
             elif integration_id == "medium_publish":
                 token = (os.getenv("MEDIUM_TOKEN") or "").strip()
                 if token:
-                    status = "configured"
-                    success = True
-                    message = "Token present (connector planned)"
+                    status = "invalid"
+                    success = False
+                    message = "Token present, connector not implemented yet"
                 else:
                     status = "missing"
                     message = "Missing MEDIUM_TOKEN"
             elif integration_id in {"hf_blog_publish", "hf_spaces_publish"}:
                 token = (os.getenv("HF_TOKEN") or "").strip()
                 if token:
-                    status = "configured"
-                    success = True
-                    message = "Token present (connector planned)"
+                    status = "invalid"
+                    success = False
+                    message = "Token present, connector not implemented yet"
                 else:
                     status = "missing"
                     message = "Missing HF_TOKEN"

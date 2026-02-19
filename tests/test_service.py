@@ -462,3 +462,52 @@ def test_publish_devto_channel_with_connector(monkeypatch, tmp_path: Path) -> No
     assert result.success is True
     assert result.status == "published"
     assert result.external_id == "devto-42"
+
+
+def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    accounts_file = tmp_path / "accounts-state.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+
+    service = BrandStudioService()
+    account = service.create_channel_account(
+        "reddit",
+        ChannelAccountCreateRequest(
+            display_name="Reddit account",
+            target="r/python",
+            is_default=True,
+        ),
+        actor="tester",
+    )
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["reddit"],
+        languages=["en"],
+        tone="expert",
+        actor="tester",
+    )
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="reddit",
+        target_language="en",
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=account.account_id,
+    )
+    result = service.publish_queue_item(
+        item_id=queue_item.item_id,
+        confirm_publish=True,
+        actor="tester",
+    )
+    assert result.success is False
+    assert result.status == "failed"
+    assert "not implemented yet" in result.message
