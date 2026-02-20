@@ -8,10 +8,26 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
+from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from venom_module_brand_studio.api.schemas import (
+    BrandBaseSource,
+    BrandBaseSourceCreateRequest,
+    BrandBaseSourceUpdateRequest,
+    BrandCampaign,
+    BrandCampaignCreateRequest,
+    BrandCampaignRunResponse,
+    BrandCampaignUpdateRequest,
+    BrandKeyword,
+    BrandKeywordCreateRequest,
+    BrandKeywordUpdateRequest,
+    BrandMonitoringScan,
+    BrandMonitoringScanRequest,
+    BrandMonitoringScanResponse,
+    BrandMonitoringSummary,
+    BrandSearchResult,
     BrandStudioAuditEntry,
     ChannelAccount,
     ChannelAccountCreateRequest,
@@ -32,12 +48,14 @@ from venom_module_brand_studio.api.schemas import (
     OpportunityScoreBreakdown,
     PublishQueueItem,
     PublishResult,
+    SearchResultClass,
     StrategyConfig,
     StrategyCreateRequest,
     StrategyUpdateRequest,
 )
 from venom_module_brand_studio.connectors.devto import DevtoPublisher
 from venom_module_brand_studio.connectors.github import GitHubPublisher
+from venom_module_brand_studio.connectors.google_cse import GoogleCSEConnector
 from venom_module_brand_studio.connectors.hashnode import HashnodePublisher
 from venom_module_brand_studio.connectors.hf import HfPublisher
 from venom_module_brand_studio.connectors.linkedin import LinkedInPublisher
@@ -297,11 +315,20 @@ class BrandStudioService:
         self._active_strategy_id = ""
         self._last_integration_test: dict[str, datetime] = {}
         self._lock = RLock()
+        self._keywords: dict[str, BrandKeyword] = {}
+        self._base_sources: dict[str, BrandBaseSource] = {}
+        self._scan_results: list[BrandSearchResult] = []
+        self._scans: list[BrandMonitoringScan] = []
+        self._campaigns: dict[str, BrandCampaign] = {}
+        self._monitoring_request_ids: set[str] = set()
+        self._campaign_run_request_ids: set[str] = set()
+        self._google_cse = GoogleCSEConnector.from_env()
         self._init_default_strategy()
         self._init_default_accounts()
         self._load_candidates_cache()
         self._load_runtime_state()
         self._load_accounts_state()
+        self._load_monitoring_state()
 
     def _resolve_cache_file(self) -> Path:
         raw = (os.getenv("BRAND_STUDIO_CACHE_FILE") or "").strip()
@@ -2115,6 +2142,433 @@ class BrandStudioService:
                 )
             )
             self._persist_runtime_state()
+
+    # ---- Monitoring feature guard ----
+
+    def _monitoring_enabled(self) -> bool:
+        raw = (os.getenv("FEATURE_BRAND_STUDIO_MONITORING") or "true").strip().lower()
+        return raw not in {"0", "false", "off", "no"}
+
+    # ---- Keywords CRUD ----
+
+    def keywords_list(self) -> list[BrandKeyword]:
+        with self._lock:
+            items = list(self._keywords.values())
+            items.sort(key=lambda it: it.phrase.lower())
+            return items
+
+    def keyword_create(self, payload: BrandKeywordCreateRequest, *, actor: str) -> BrandKeyword:
+        with self._lock:
+            keyword_id = f"kw-{uuid4().hex[:8]}"
+            now = _utcnow()
+            item = BrandKeyword(
+                keyword_id=keyword_id,
+                phrase=payload.phrase,
+                keyword_type=payload.keyword_type,
+                priority=payload.priority,
+                active=payload.active,
+                created_at=now,
+            )
+            self._keywords[keyword_id] = item
+            self._persist_monitoring_state()
+            self._add_audit(actor=actor, action="keyword.create", status="ok", payload=keyword_id)
+            return item
+
+    def keyword_update(
+        self, keyword_id: str, payload: BrandKeywordUpdateRequest, *, actor: str
+    ) -> BrandKeyword:
+        with self._lock:
+            current = self._keywords.get(keyword_id)
+            if current is None:
+                raise KeyError("keyword_not_found")
+            updates = payload.model_dump(exclude_none=True)
+            updated = current.model_copy(update=updates)
+            self._keywords[keyword_id] = updated
+            self._persist_monitoring_state()
+            self._add_audit(actor=actor, action="keyword.update", status="ok", payload=keyword_id)
+            return updated
+
+    def keyword_delete(self, keyword_id: str, *, actor: str) -> None:
+        with self._lock:
+            if keyword_id not in self._keywords:
+                raise KeyError("keyword_not_found")
+            del self._keywords[keyword_id]
+            self._persist_monitoring_state()
+            self._add_audit(actor=actor, action="keyword.delete", status="ok", payload=keyword_id)
+
+    # ---- Base Sources CRUD ----
+
+    def base_sources_list(self) -> list[BrandBaseSource]:
+        with self._lock:
+            items = list(self._base_sources.values())
+            items.sort(key=lambda it: it.name.lower())
+            return items
+
+    def base_source_create(
+        self, payload: BrandBaseSourceCreateRequest, *, actor: str
+    ) -> BrandBaseSource:
+        with self._lock:
+            canonical = _canonical_url(payload.base_url)
+            for existing in self._base_sources.values():
+                if _canonical_url(existing.base_url) == canonical:
+                    raise ValueError("base_source_url_duplicate")
+            source_id = f"src-{uuid4().hex[:8]}"
+            now = _utcnow()
+            item = BrandBaseSource(
+                source_id=source_id,
+                name=payload.name,
+                base_url=canonical,
+                channel=payload.channel,
+                priority=payload.priority,
+                enabled=payload.enabled,
+                owner_tag=payload.owner_tag,
+                created_at=now,
+            )
+            self._base_sources[source_id] = item
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor, action="base_source.create", status="ok", payload=source_id
+            )
+            return item
+
+    def base_source_update(
+        self, source_id: str, payload: BrandBaseSourceUpdateRequest, *, actor: str
+    ) -> BrandBaseSource:
+        with self._lock:
+            current = self._base_sources.get(source_id)
+            if current is None:
+                raise KeyError("base_source_not_found")
+            updates = payload.model_dump(exclude_none=True)
+            if "base_url" in updates:
+                updates["base_url"] = _canonical_url(updates["base_url"])
+            updated = current.model_copy(update=updates)
+            self._base_sources[source_id] = updated
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor, action="base_source.update", status="ok", payload=source_id
+            )
+            return updated
+
+    def base_source_delete(self, source_id: str, *, actor: str) -> None:
+        with self._lock:
+            if source_id not in self._base_sources:
+                raise KeyError("base_source_not_found")
+            del self._base_sources[source_id]
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor, action="base_source.delete", status="ok", payload=source_id
+            )
+
+    # ---- Monitoring scan ----
+
+    def _classify_result(
+        self, url: str, snippet: str
+    ) -> tuple[SearchResultClass, bool, str | None]:
+        """Classify a search result relative to known base sources."""
+        result_domain = urlsplit(url).netloc.lower().lstrip("www.")
+        for src in self._base_sources.values():
+            src_domain = urlsplit(src.base_url).netloc.lower().lstrip("www.")
+            if result_domain == src_domain or url.startswith(src.base_url):
+                return "owned_source", True, src.source_id
+        snippet_lower = snippet.lower()
+        if any(kw in snippet_lower for kw in ("official", "my blog", "my project", "własny")):
+            return "brand_mention_positive", False, None
+        if any(kw in snippet_lower for kw in ("scam", "fraud", "fake", "spam", "ripoff")):
+            return "brand_mention_risk", False, None
+        if any(kw in snippet_lower for kw in ("review", "mention", "about", "profile")):
+            return "brand_mention_neutral", False, None
+        return "unrelated", False, None
+
+    def _stub_search_results(self, keyword: BrandKeyword) -> list[dict[str, object]]:
+        return [
+            {
+                "url": f"https://example.com/{keyword.phrase.replace(' ', '-')}-result-1",
+                "title": f"{keyword.phrase} – Overview",
+                "snippet": f"Content about {keyword.phrase} from example.com.",
+                "position": 1,
+            },
+            {
+                "url": f"https://news.ycombinator.com/item?q={keyword.phrase.replace(' ', '+')}",
+                "title": f"HN: Discussion on {keyword.phrase}",
+                "snippet": f"Hacker News discussion mentioning {keyword.phrase}.",
+                "position": 2,
+            },
+        ]
+
+    def monitoring_scan(
+        self, payload: BrandMonitoringScanRequest, *, actor: str
+    ) -> BrandMonitoringScanResponse:
+        with self._lock:
+            if payload.request_id and payload.request_id in self._monitoring_request_ids:
+                if self._scans:
+                    last_scan = self._scans[-1]
+                    results = [r for r in self._scan_results if r.scan_id == last_scan.scan_id]
+                    return BrandMonitoringScanResponse(scan=last_scan, results=results)
+
+            keywords_to_scan: list[BrandKeyword]
+            if payload.keyword_ids:
+                keywords_to_scan = [
+                    kw for kw in self._keywords.values() if kw.keyword_id in payload.keyword_ids
+                ]
+            else:
+                keywords_to_scan = [kw for kw in self._keywords.values() if kw.active]
+
+            scan_id = f"scan-{uuid4().hex[:8]}"
+            now = _utcnow()
+            all_results: list[BrandSearchResult] = []
+            scan_status: Literal["completed", "partial", "failed"] = "completed"
+            scan_message: str | None = None
+
+            for kw in keywords_to_scan:
+                try:
+                    if self._google_cse is not None:
+                        raw_results = self._google_cse.search(kw.phrase)
+                    else:
+                        raw_results = self._stub_search_results(kw)
+                    for raw in raw_results:
+                        classification, maps_to_src, src_id = self._classify_result(
+                            str(raw["url"]), str(raw["snippet"])
+                        )
+                        result = BrandSearchResult(
+                            result_id=f"res-{uuid4().hex[:8]}",
+                            scan_id=scan_id,
+                            keyword_id=kw.keyword_id,
+                            url=str(raw["url"]),
+                            title=str(raw["title"]),
+                            snippet=str(raw["snippet"]),
+                            position=int(raw["position"]),
+                            scanned_at=now,
+                            classification=classification,
+                            maps_to_base_source=maps_to_src,
+                            base_source_id=src_id,
+                        )
+                        all_results.append(result)
+                except Exception as exc:
+                    scan_status = "partial"
+                    scan_message = f"Partial failure: {exc}"
+                    self._add_audit(
+                        actor=actor,
+                        action="monitoring.scan",
+                        status="partial",
+                        payload=f"{scan_id}:kw={kw.keyword_id}:{exc}",
+                    )
+
+            scan = BrandMonitoringScan(
+                scan_id=scan_id,
+                keywords_scanned=[kw.keyword_id for kw in keywords_to_scan],
+                total_results=len(all_results),
+                scanned_at=now,
+                status=scan_status,
+                message=scan_message,
+            )
+            self._scans.append(scan)
+            self._scan_results.extend(all_results)
+            if payload.request_id:
+                self._monitoring_request_ids.add(payload.request_id)
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor,
+                action="monitoring.scan",
+                status="ok",
+                payload=f"{scan_id}:keywords={len(keywords_to_scan)}:results={len(all_results)}",
+            )
+            return BrandMonitoringScanResponse(scan=scan, results=all_results)
+
+    def monitoring_results(self, *, scan_id: str | None = None) -> list[BrandSearchResult]:
+        with self._lock:
+            if scan_id:
+                return [r for r in self._scan_results if r.scan_id == scan_id]
+            return list(self._scan_results)
+
+    def monitoring_summary(self) -> BrandMonitoringSummary:
+        with self._lock:
+            total_results = len(self._scan_results)
+            owned_count = sum(1 for r in self._scan_results if r.maps_to_base_source)
+            risk_count = sum(
+                1 for r in self._scan_results if r.classification == "brand_mention_risk"
+            )
+            coverage = (owned_count / total_results) if total_results > 0 else 0.0
+            last_scan_at = self._scans[-1].scanned_at if self._scans else None
+            return BrandMonitoringSummary(
+                total_keywords=len(self._keywords),
+                active_keywords=sum(1 for kw in self._keywords.values() if kw.active),
+                total_base_sources=len(self._base_sources),
+                total_results=total_results,
+                owned_source_coverage=coverage,
+                risk_count=risk_count,
+                last_scan_at=last_scan_at,
+            )
+
+    # ---- Campaigns CRUD ----
+
+    def campaigns_list(self) -> list[BrandCampaign]:
+        with self._lock:
+            items = list(self._campaigns.values())
+            items.sort(key=lambda it: it.created_at, reverse=True)
+            return items
+
+    def campaign_create(
+        self, payload: BrandCampaignCreateRequest, *, actor: str
+    ) -> BrandCampaign:
+        with self._lock:
+            campaign_id = f"camp-{uuid4().hex[:8]}"
+            now = _utcnow()
+            strategy_id = payload.strategy_id or self._active_strategy_id
+            item = BrandCampaign(
+                campaign_id=campaign_id,
+                name=payload.name,
+                strategy_id=strategy_id,
+                source_scan_id=payload.source_scan_id,
+                linked_keyword_ids=list(payload.linked_keyword_ids),
+                linked_result_ids=list(payload.linked_result_ids),
+                channels=list(payload.channels),
+                status="draft",
+                created_at=now,
+                updated_at=now,
+            )
+            self._campaigns[campaign_id] = item
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor, action="campaign.create", status="ok", payload=campaign_id
+            )
+            return item
+
+    def campaign_get(self, campaign_id: str) -> BrandCampaign:
+        with self._lock:
+            item = self._campaigns.get(campaign_id)
+            if item is None:
+                raise KeyError("campaign_not_found")
+            return item
+
+    def campaign_update(
+        self, campaign_id: str, payload: BrandCampaignUpdateRequest, *, actor: str
+    ) -> BrandCampaign:
+        with self._lock:
+            current = self._campaigns.get(campaign_id)
+            if current is None:
+                raise KeyError("campaign_not_found")
+            updates = payload.model_dump(exclude_none=True)
+            updates["updated_at"] = _utcnow()
+            updated = current.model_copy(update=updates)
+            self._campaigns[campaign_id] = updated
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor, action="campaign.update", status="ok", payload=campaign_id
+            )
+            return updated
+
+    def campaign_run(
+        self, campaign_id: str, *, request_id: str | None = None, actor: str
+    ) -> BrandCampaignRunResponse:
+        with self._lock:
+            item = self._campaigns.get(campaign_id)
+            if item is None:
+                raise KeyError("campaign_not_found")
+            if item.status in {"completed", "failed", "cancelled"}:
+                raise ValueError("campaign_already_terminal")
+            run_key = f"{campaign_id}:{request_id}" if request_id else None
+            if run_key and run_key in self._campaign_run_request_ids:
+                return BrandCampaignRunResponse(
+                    campaign_id=campaign_id,
+                    status=item.status,
+                    message="Idempotent: campaign run already initiated",
+                )
+            now = _utcnow()
+            updated = item.model_copy(update={"status": "running", "updated_at": now})
+            self._campaigns[campaign_id] = updated
+            if run_key:
+                self._campaign_run_request_ids.add(run_key)
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor, action="campaign.run", status="ok", payload=campaign_id
+            )
+            return BrandCampaignRunResponse(
+                campaign_id=campaign_id,
+                status="running",
+                message="Campaign started. Queue drafts to proceed with publishing.",
+            )
+
+    # ---- Monitoring persistence ----
+
+    def _resolve_monitoring_file(self) -> Path:
+        raw = (os.getenv("BRAND_STUDIO_MONITORING_FILE") or "").strip()
+        if raw:
+            return Path(raw)
+        state_file = self._resolve_state_file()
+        return state_file.parent / "monitoring-state.json"
+
+    def _persist_monitoring_state(self) -> None:
+        try:
+            monitoring_file = self._resolve_monitoring_file()
+            monitoring_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "keywords": [kw.model_dump(mode="json") for kw in self._keywords.values()],
+                "base_sources": [
+                    src.model_dump(mode="json") for src in self._base_sources.values()
+                ],
+                "scan_results": [
+                    r.model_dump(mode="json") for r in self._scan_results[-500:]
+                ],
+                "scans": [s.model_dump(mode="json") for s in self._scans[-100:]],
+                "campaigns": [c.model_dump(mode="json") for c in self._campaigns.values()],
+                "monitoring_request_ids": list(self._monitoring_request_ids),
+                "campaign_run_request_ids": list(self._campaign_run_request_ids),
+            }
+            monitoring_file.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.warning("Brand Studio monitoring state persist failed: %s", exc)
+
+    def _load_monitoring_state(self) -> None:
+        try:
+            monitoring_file = self._resolve_monitoring_file()
+            if not monitoring_file.exists():
+                return
+            payload = json.loads(monitoring_file.read_text(encoding="utf-8"))
+
+            kw_raw = payload.get("keywords")
+            if isinstance(kw_raw, list):
+                for item in kw_raw:
+                    if isinstance(item, dict):
+                        kw = BrandKeyword.model_validate(item)
+                        self._keywords[kw.keyword_id] = kw
+
+            src_raw = payload.get("base_sources")
+            if isinstance(src_raw, list):
+                for item in src_raw:
+                    if isinstance(item, dict):
+                        src = BrandBaseSource.model_validate(item)
+                        self._base_sources[src.source_id] = src
+
+            results_raw = payload.get("scan_results")
+            if isinstance(results_raw, list):
+                for item in results_raw:
+                    if isinstance(item, dict):
+                        self._scan_results.append(BrandSearchResult.model_validate(item))
+
+            scans_raw = payload.get("scans")
+            if isinstance(scans_raw, list):
+                for item in scans_raw:
+                    if isinstance(item, dict):
+                        self._scans.append(BrandMonitoringScan.model_validate(item))
+
+            camps_raw = payload.get("campaigns")
+            if isinstance(camps_raw, list):
+                for item in camps_raw:
+                    if isinstance(item, dict):
+                        camp = BrandCampaign.model_validate(item)
+                        self._campaigns[camp.campaign_id] = camp
+
+            req_ids = payload.get("monitoring_request_ids")
+            if isinstance(req_ids, list):
+                self._monitoring_request_ids = set(req_ids)
+
+            run_ids = payload.get("campaign_run_request_ids")
+            if isinstance(run_ids, list):
+                self._campaign_run_request_ids = set(run_ids)
+        except Exception as exc:
+            logger.warning("Brand Studio monitoring state load failed: %s", exc)
 
 
 _service = BrandStudioService()

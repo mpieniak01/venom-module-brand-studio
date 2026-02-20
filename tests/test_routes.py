@@ -361,3 +361,249 @@ def test_channel_accounts_crud_flow() -> None:
         headers=AUTH_HEADERS,
     )
     assert delete.status_code == 204
+
+
+def test_monitoring_keywords_crud() -> None:
+    client = build_client()
+
+    # List empty
+    resp = client.get("/api/v1/brand-studio/monitoring/keywords")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 0
+
+    # Create
+    create_resp = client.post(
+        "/api/v1/brand-studio/monitoring/keywords",
+        json={"phrase": "personal brand", "keyword_type": "brand_core", "priority": 5},
+        headers=AUTH_HEADERS,
+    )
+    assert create_resp.status_code == 200
+    kw = create_resp.json()
+    assert kw["phrase"] == "personal brand"
+    keyword_id = kw["keyword_id"]
+
+    # List has 1
+    list_resp = client.get("/api/v1/brand-studio/monitoring/keywords")
+    assert list_resp.json()["count"] == 1
+
+    # Update
+    update_resp = client.patch(
+        f"/api/v1/brand-studio/monitoring/keywords/{keyword_id}",
+        json={"priority": 3},
+        headers=AUTH_HEADERS,
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["priority"] == 3
+
+    # 404 on missing
+    resp_404 = client.patch(
+        "/api/v1/brand-studio/monitoring/keywords/missing-id",
+        json={"priority": 1},
+        headers=AUTH_HEADERS,
+    )
+    assert resp_404.status_code == 404
+
+    # Delete
+    del_resp = client.delete(
+        f"/api/v1/brand-studio/monitoring/keywords/{keyword_id}",
+        headers=AUTH_HEADERS,
+    )
+    assert del_resp.status_code == 204
+
+    # List empty again
+    assert client.get("/api/v1/brand-studio/monitoring/keywords").json()["count"] == 0
+
+
+def test_monitoring_base_sources_crud() -> None:
+    client = build_client()
+
+    # List empty
+    assert client.get("/api/v1/brand-studio/monitoring/sources").json()["count"] == 0
+
+    # Create
+    create_resp = client.post(
+        "/api/v1/brand-studio/monitoring/sources",
+        json={
+            "name": "My Blog",
+            "base_url": "https://myblog.example.com",
+            "channel": "blog",
+            "priority": 5,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert create_resp.status_code == 200
+    src = create_resp.json()
+    source_id = src["source_id"]
+
+    # Duplicate URL returns 409
+    dup_resp = client.post(
+        "/api/v1/brand-studio/monitoring/sources",
+        json={
+            "name": "My Blog Dup",
+            "base_url": "https://myblog.example.com",
+            "channel": "blog",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert dup_resp.status_code == 409
+
+    # Update
+    update_resp = client.patch(
+        f"/api/v1/brand-studio/monitoring/sources/{source_id}",
+        json={"enabled": False},
+        headers=AUTH_HEADERS,
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["enabled"] is False
+
+    # 404 on missing
+    resp_404 = client.patch(
+        "/api/v1/brand-studio/monitoring/sources/missing-id",
+        json={"enabled": True},
+        headers=AUTH_HEADERS,
+    )
+    assert resp_404.status_code == 404
+
+    # Delete
+    del_resp = client.delete(
+        f"/api/v1/brand-studio/monitoring/sources/{source_id}",
+        headers=AUTH_HEADERS,
+    )
+    assert del_resp.status_code == 204
+
+
+def test_monitoring_scan_results_summary() -> None:
+    client = build_client()
+
+    # Create a keyword first
+    kw_resp = client.post(
+        "/api/v1/brand-studio/monitoring/keywords",
+        json={"phrase": "my brand", "keyword_type": "brand_core"},
+        headers=AUTH_HEADERS,
+    )
+    assert kw_resp.status_code == 200
+
+    # Run scan (uses stub since no CSE configured)
+    scan_resp = client.post(
+        "/api/v1/brand-studio/monitoring/scan",
+        json={},
+        headers=AUTH_HEADERS,
+    )
+    assert scan_resp.status_code == 200
+    scan_payload = scan_resp.json()
+    assert scan_payload["scan"]["status"] in {"completed", "partial"}
+    assert scan_payload["scan"]["total_results"] >= 0
+    scan_id = scan_payload["scan"]["scan_id"]
+
+    # Results
+    results_resp = client.get("/api/v1/brand-studio/monitoring/results")
+    assert results_resp.status_code == 200
+    assert results_resp.json()["count"] >= 0
+
+    # Results with scan_id filter
+    filtered_resp = client.get(
+        "/api/v1/brand-studio/monitoring/results",
+        params={"scan_id": scan_id},
+    )
+    assert filtered_resp.status_code == 200
+    assert filtered_resp.json()["scan_id"] == scan_id
+
+    # Summary
+    summary_resp = client.get("/api/v1/brand-studio/monitoring/summary")
+    assert summary_resp.status_code == 200
+    summary = summary_resp.json()
+    assert summary["total_keywords"] == 1
+    assert summary["active_keywords"] == 1
+    assert "owned_source_coverage" in summary
+
+
+def test_monitoring_scan_idempotency() -> None:
+    client = build_client()
+
+    # Create keyword
+    client.post(
+        "/api/v1/brand-studio/monitoring/keywords",
+        json={"phrase": "idempotent brand"},
+        headers=AUTH_HEADERS,
+    )
+
+    # First scan with request_id
+    scan1 = client.post(
+        "/api/v1/brand-studio/monitoring/scan",
+        json={"request_id": "req-unique-001"},
+        headers=AUTH_HEADERS,
+    )
+    assert scan1.status_code == 200
+
+    # Second scan with same request_id should return same/cached result
+    scan2 = client.post(
+        "/api/v1/brand-studio/monitoring/scan",
+        json={"request_id": "req-unique-001"},
+        headers=AUTH_HEADERS,
+    )
+    assert scan2.status_code == 200
+
+
+def test_monitoring_disabled_returns_403(monkeypatch) -> None:
+    monkeypatch.setenv("FEATURE_BRAND_STUDIO_MONITORING", "false")
+    client = build_client()
+    resp = client.get("/api/v1/brand-studio/monitoring/keywords")
+    assert resp.status_code == 403
+
+
+def test_campaigns_crud_and_run() -> None:
+    client = build_client()
+
+    # List empty
+    assert client.get("/api/v1/brand-studio/campaigns").json()["count"] == 0
+
+    # Create
+    create_resp = client.post(
+        "/api/v1/brand-studio/campaigns",
+        json={
+            "name": "Q1 Brand Push",
+            "channels": ["x", "linkedin"],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert create_resp.status_code == 200
+    campaign = create_resp.json()["item"]
+    campaign_id = campaign["campaign_id"]
+    assert campaign["status"] == "draft"
+
+    # Get
+    get_resp = client.get(f"/api/v1/brand-studio/campaigns/{campaign_id}")
+    assert get_resp.status_code == 200
+
+    # Update
+    update_resp = client.patch(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}",
+        json={"status": "ready"},
+        headers=AUTH_HEADERS,
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["item"]["status"] == "ready"
+
+    # Run
+    run_resp = client.post(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}/run",
+        headers=AUTH_HEADERS,
+    )
+    assert run_resp.status_code == 200
+    assert run_resp.json()["status"] == "running"
+
+    # Update to completed then run again -> 409
+    client.patch(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}",
+        json={"status": "completed"},
+        headers=AUTH_HEADERS,
+    )
+    run_again = client.post(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}/run",
+        headers=AUTH_HEADERS,
+    )
+    assert run_again.status_code == 409
+
+    # 404 for missing campaign
+    resp_404 = client.get("/api/v1/brand-studio/campaigns/camp-missing")
+    assert resp_404.status_code == 404

@@ -303,3 +303,172 @@ class ChannelAccountTestResponse(BaseModel):
     status: IntegrationStatus
     tested_at: datetime
     message: str
+
+
+KeywordType = Literal[
+    "brand_core", "brand_product", "brand_person", "risk_term", "competitor_context"
+]
+SearchResultClass = Literal[
+    "owned_source",
+    "brand_mention_positive",
+    "brand_mention_neutral",
+    "brand_mention_risk",
+    "unrelated",
+]
+CampaignStatus = Literal["draft", "ready", "running", "completed", "failed", "cancelled"]
+
+
+class BrandKeyword(BaseModel):
+    keyword_id: str
+    phrase: str = Field(min_length=1)
+    keyword_type: KeywordType
+    priority: int = Field(ge=1, le=5)
+    active: bool
+    created_at: datetime
+
+
+class BrandKeywordCreateRequest(BaseModel):
+    phrase: str = Field(min_length=1)
+    keyword_type: KeywordType = "brand_core"
+    priority: int = Field(default=3, ge=1, le=5)
+    active: bool = True
+
+
+class BrandKeywordUpdateRequest(BaseModel):
+    phrase: str | None = Field(default=None, min_length=1)
+    keyword_type: KeywordType | None = None
+    priority: int | None = Field(default=None, ge=1, le=5)
+    active: bool | None = None
+
+
+class BrandKeywordsResponse(BaseModel):
+    count: int
+    items: list[BrandKeyword]
+
+
+class BrandBaseSource(BaseModel):
+    source_id: str
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    channel: BrandChannel
+    priority: int = Field(ge=1, le=5)
+    enabled: bool
+    owner_tag: str | None = None
+    created_at: datetime
+
+
+class BrandBaseSourceCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    channel: BrandChannel
+    priority: int = Field(default=3, ge=1, le=5)
+    enabled: bool = True
+    owner_tag: str | None = None
+
+
+class BrandBaseSourceUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    base_url: str | None = Field(default=None, min_length=1)
+    channel: BrandChannel | None = None
+    priority: int | None = Field(default=None, ge=1, le=5)
+    enabled: bool | None = None
+    owner_tag: str | None = None
+
+
+class BrandBaseSourcesResponse(BaseModel):
+    count: int
+    items: list[BrandBaseSource]
+
+
+class BrandSearchResult(BaseModel):
+    result_id: str
+    scan_id: str
+    keyword_id: str
+    url: str
+    title: str
+    snippet: str
+    position: int
+    scanned_at: datetime
+    classification: SearchResultClass
+    maps_to_base_source: bool
+    base_source_id: str | None = None
+
+
+class BrandMonitoringScan(BaseModel):
+    scan_id: str
+    keywords_scanned: list[str]
+    total_results: int
+    scanned_at: datetime
+    status: Literal["completed", "partial", "failed"]
+    message: str | None = None
+
+
+class BrandMonitoringScanRequest(BaseModel):
+    keyword_ids: list[str] | None = None
+    request_id: str | None = None
+
+
+class BrandMonitoringScanResponse(BaseModel):
+    scan: BrandMonitoringScan
+    results: list[BrandSearchResult]
+
+
+class BrandMonitoringResultsResponse(BaseModel):
+    count: int
+    scan_id: str | None = None
+    items: list[BrandSearchResult]
+
+
+class BrandMonitoringSummary(BaseModel):
+    total_keywords: int
+    active_keywords: int
+    total_base_sources: int
+    total_results: int
+    owned_source_coverage: float = Field(ge=0.0, le=1.0)
+    risk_count: int
+    last_scan_at: datetime | None = None
+
+
+class BrandCampaign(BaseModel):
+    campaign_id: str
+    name: str = Field(min_length=1)
+    strategy_id: str
+    source_scan_id: str | None = None
+    linked_keyword_ids: list[str] = Field(default_factory=list)
+    linked_result_ids: list[str] = Field(default_factory=list)
+    channels: list[BrandChannel] = Field(min_length=1)
+    status: CampaignStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class BrandCampaignCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    strategy_id: str | None = None
+    source_scan_id: str | None = None
+    linked_keyword_ids: list[str] = Field(default_factory=list)
+    linked_result_ids: list[str] = Field(default_factory=list)
+    channels: list[BrandChannel] = Field(min_length=1)
+
+
+class BrandCampaignUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    status: CampaignStatus | None = None
+    linked_keyword_ids: list[str] | None = None
+    linked_result_ids: list[str] | None = None
+    channels: list[BrandChannel] | None = Field(default=None, min_length=1)
+
+
+class BrandCampaignsResponse(BaseModel):
+    count: int
+    items: list[BrandCampaign]
+
+
+class BrandCampaignResponse(BaseModel):
+    item: BrandCampaign
+
+
+class BrandCampaignRunResponse(BaseModel):
+    campaign_id: str
+    status: CampaignStatus
+    message: str

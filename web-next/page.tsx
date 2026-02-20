@@ -20,7 +20,7 @@ type PublishChannel =
   | "devto"
   | "hashnode";
 type Channel = "all" | PublishChannel;
-type Tab = "radar" | "config" | "integrations";
+type Tab = "radar" | "monitoring" | "sources" | "keywords" | "campaigns" | "config" | "integrations";
 type DiscoveryMode = "stub" | "hybrid" | "live";
 type IntegrationId =
   | "github_publish"
@@ -177,18 +177,68 @@ type ChannelAccountsResponse = {
   items: ChannelAccount[];
 };
 
+type KeywordType = "brand_core" | "brand_product" | "brand_person" | "risk_term" | "competitor_context";
+type SearchResultClass = "owned_source" | "brand_mention_positive" | "brand_mention_neutral" | "brand_mention_risk" | "unrelated";
+type CampaignStatus = "draft" | "ready" | "running" | "completed" | "failed" | "cancelled";
+
+type BrandKeyword = {
+  keyword_id: string;
+  phrase: string;
+  keyword_type: KeywordType;
+  priority: number;
+  active: boolean;
+  created_at: string;
+};
+
+type BrandBaseSource = {
+  source_id: string;
+  name: string;
+  base_url: string;
+  channel: PublishChannel;
+  priority: number;
+  enabled: boolean;
+  owner_tag?: string | null;
+  created_at: string;
+};
+
+type BrandSearchResult = {
+  result_id: string;
+  scan_id: string;
+  keyword_id: string;
+  url: string;
+  title: string;
+  snippet: string;
+  position: number;
+  scanned_at: string;
+  classification: SearchResultClass;
+  maps_to_base_source: boolean;
+  base_source_id?: string | null;
+};
+
+type BrandMonitoringSummary = {
+  total_keywords: number;
+  active_keywords: number;
+  total_base_sources: number;
+  total_results: number;
+  owned_source_coverage: number;
+  risk_count: number;
+  last_scan_at?: string | null;
+};
+
+type BrandCampaign = {
+  campaign_id: string;
+  name: string;
+  strategy_id: string;
+  source_scan_id?: string | null;
+  linked_keyword_ids: string[];
+  linked_result_ids: string[];
+  channels: PublishChannel[];
+  status: CampaignStatus;
+  created_at: string;
+  updated_at: string;
+};
+
 const CHANNELS: PublishChannel[] = [
-  "x",
-  "github",
-  "blog",
-  "linkedin",
-  "medium",
-  "hf_blog",
-  "hf_spaces",
-  "reddit",
-  "devto",
-  "hashnode",
-];
 
 const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
@@ -316,6 +366,36 @@ function TabIcon({ tab }: Readonly<{ tab: Tab }>) {
       </svg>
     );
   }
+  if (tab === "monitoring") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </svg>
+    );
+  }
+  if (tab === "sources") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        <polyline points="9 22 9 12 15 12 15 22" />
+      </svg>
+    );
+  }
+  if (tab === "keywords") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20 11V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8" />
+        <path d="M17 17l2 2 4-4" />
+      </svg>
+    );
+  }
+  if (tab === "campaigns") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+      </svg>
+    );
+  }
   return (
     <svg
       aria-hidden="true"
@@ -390,6 +470,25 @@ export default function BrandStudioPage() {
   const [accountDraftTargetByChannel, setAccountDraftTargetByChannel] = useState<
     Partial<Record<PublishChannel, string>>
   >({});
+
+  const [monitoringSummary, setMonitoringSummary] = useState<BrandMonitoringSummary | null>(null);
+  const [monitoringResults, setMonitoringResults] = useState<BrandSearchResult[]>([]);
+  const [monitoringLoading, setMonitoringLoading] = useState(false);
+  const [monitoringError, setMonitoringError] = useState<string | null>(null);
+  const [keywords, setKeywords] = useState<BrandKeyword[]>([]);
+  const [keywordsLoading, setKeywordsLoading] = useState(false);
+  const [newKeywordPhrase, setNewKeywordPhrase] = useState("");
+  const [newKeywordType, setNewKeywordType] = useState<KeywordType>("brand_core");
+  const [baseSources, setBaseSources] = useState<BrandBaseSource[]>([]);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [newSourceName, setNewSourceName] = useState("");
+  const [newSourceUrl, setNewSourceUrl] = useState("");
+  const [newSourceChannel, setNewSourceChannel] = useState<PublishChannel>("blog");
+  const [campaigns, setCampaigns] = useState<BrandCampaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  const [campaignsError, setCampaignsError] = useState<string | null>(null);
+  const [newCampaignName, setNewCampaignName] = useState("");
+  const [newCampaignChannels, setNewCampaignChannels] = useState<PublishChannel[]>(["x"]);
 
   useEffect(() => {
     const raw = (typeof navigator !== "undefined" ? navigator.language : "en").toLowerCase();
@@ -612,6 +711,70 @@ export default function BrandStudioPage() {
     }
   }, []);
 
+  const loadMonitoring = useCallback(async () => {
+    setMonitoringLoading(true);
+    setMonitoringError(null);
+    try {
+      const [summaryResp, resultsResp] = await Promise.all([
+        fetch("/api/v1/brand-studio/monitoring/summary", { cache: "no-store" }),
+        fetch("/api/v1/brand-studio/monitoring/results", { cache: "no-store" }),
+      ]);
+      if (summaryResp.ok) {
+        setMonitoringSummary((await summaryResp.json()) as BrandMonitoringSummary);
+      }
+      if (resultsResp.ok) {
+        const payload = (await resultsResp.json()) as { count: number; items: BrandSearchResult[] };
+        setMonitoringResults(payload.items);
+      }
+    } catch (err) {
+      setMonitoringError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setMonitoringLoading(false);
+    }
+  }, []);
+
+  const loadKeywords = useCallback(async () => {
+    setKeywordsLoading(true);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/monitoring/keywords", { cache: "no-store" });
+      if (resp.ok) {
+        const payload = (await resp.json()) as { count: number; items: BrandKeyword[] };
+        setKeywords(payload.items);
+      }
+    } finally {
+      setKeywordsLoading(false);
+    }
+  }, []);
+
+  const loadBaseSources = useCallback(async () => {
+    setSourcesLoading(true);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/monitoring/sources", { cache: "no-store" });
+      if (resp.ok) {
+        const payload = (await resp.json()) as { count: number; items: BrandBaseSource[] };
+        setBaseSources(payload.items);
+      }
+    } finally {
+      setSourcesLoading(false);
+    }
+  }, []);
+
+  const loadCampaigns = useCallback(async () => {
+    setCampaignsLoading(true);
+    setCampaignsError(null);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/campaigns", { cache: "no-store" });
+      if (resp.ok) {
+        const payload = (await resp.json()) as { count: number; items: BrandCampaign[] };
+        setCampaigns(payload.items);
+      }
+    } catch (err) {
+      setCampaignsError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setCampaignsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCandidates();
   }, [loadCandidates]);
@@ -622,7 +785,11 @@ export default function BrandStudioPage() {
     void loadConfig();
     void loadIntegrations();
     void loadChannels();
-  }, [loadQueue, loadAudit, loadConfig, loadIntegrations, loadChannels]);
+    void loadMonitoring();
+    void loadKeywords();
+    void loadBaseSources();
+    void loadCampaigns();
+  }, [loadQueue, loadAudit, loadConfig, loadIntegrations, loadChannels, loadMonitoring, loadKeywords, loadBaseSources, loadCampaigns]);
 
   const stats = useMemo(() => {
     if (!items.length) {
@@ -1182,6 +1349,144 @@ export default function BrandStudioPage() {
     [loadAudit, loadChannels]
   );
 
+  const addKeyword = useCallback(async () => {
+    const phrase = newKeywordPhrase.trim();
+    if (!phrase) return;
+    setKeywordsLoading(true);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/monitoring/keywords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
+        body: JSON.stringify({ phrase, keyword_type: newKeywordType }),
+      });
+      if (resp.ok) {
+        setNewKeywordPhrase("");
+        await loadKeywords();
+        await loadAudit();
+      }
+    } finally {
+      setKeywordsLoading(false);
+    }
+  }, [newKeywordPhrase, newKeywordType, loadKeywords, loadAudit]);
+
+  const deleteKeyword = useCallback(
+    async (keywordId: string) => {
+      setKeywordsLoading(true);
+      try {
+        await fetch(`/api/v1/brand-studio/monitoring/keywords/${keywordId}`, {
+          method: "DELETE",
+          headers: { "X-Authenticated-User": "local-user" },
+        });
+        await loadKeywords();
+        await loadAudit();
+      } finally {
+        setKeywordsLoading(false);
+      }
+    },
+    [loadKeywords, loadAudit]
+  );
+
+  const runMonitoringScan = useCallback(async () => {
+    setMonitoringLoading(true);
+    setMonitoringError(null);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/monitoring/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      await loadMonitoring();
+      await loadAudit();
+    } catch (err) {
+      setMonitoringError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setMonitoringLoading(false);
+    }
+  }, [loadMonitoring, loadAudit]);
+
+  const addBaseSource = useCallback(async () => {
+    const name = newSourceName.trim();
+    const url = newSourceUrl.trim();
+    if (!name || !url) return;
+    setSourcesLoading(true);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/monitoring/sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
+        body: JSON.stringify({ name, base_url: url, channel: newSourceChannel }),
+      });
+      if (resp.ok) {
+        setNewSourceName("");
+        setNewSourceUrl("");
+        await loadBaseSources();
+        await loadAudit();
+      }
+    } finally {
+      setSourcesLoading(false);
+    }
+  }, [newSourceName, newSourceUrl, newSourceChannel, loadBaseSources, loadAudit]);
+
+  const deleteBaseSource = useCallback(
+    async (sourceId: string) => {
+      setSourcesLoading(true);
+      try {
+        await fetch(`/api/v1/brand-studio/monitoring/sources/${sourceId}`, {
+          method: "DELETE",
+          headers: { "X-Authenticated-User": "local-user" },
+        });
+        await loadBaseSources();
+        await loadAudit();
+      } finally {
+        setSourcesLoading(false);
+      }
+    },
+    [loadBaseSources, loadAudit]
+  );
+
+  const createCampaign = useCallback(async () => {
+    const name = newCampaignName.trim();
+    if (!name || !newCampaignChannels.length) return;
+    setCampaignsLoading(true);
+    setCampaignsError(null);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
+        body: JSON.stringify({ name, channels: newCampaignChannels }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      setNewCampaignName("");
+      await loadCampaigns();
+      await loadAudit();
+    } catch (err) {
+      setCampaignsError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setCampaignsLoading(false);
+    }
+  }, [newCampaignName, newCampaignChannels, loadCampaigns, loadAudit]);
+
+  const runCampaign = useCallback(
+    async (campaignId: string) => {
+      setCampaignsLoading(true);
+      setCampaignsError(null);
+      try {
+        const resp = await fetch(`/api/v1/brand-studio/campaigns/${campaignId}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        await loadCampaigns();
+        await loadAudit();
+      } catch (err) {
+        setCampaignsError(err instanceof Error ? err.message : "unknown_error");
+      } finally {
+        setCampaignsLoading(false);
+      }
+    },
+    [loadCampaigns, loadAudit]
+  );
+
   const toggleChannel = (value: PublishChannel) => {
     setConfigError(null);
     setConfigForm((previous) => {
@@ -1221,7 +1526,7 @@ export default function BrandStudioPage() {
       </div>
 
       <section className="flex flex-wrap gap-2 border-b border-white/10">
-        {(["radar", "config", "integrations"] as const).map((value) => (
+        {(["radar", "monitoring", "sources", "keywords", "campaigns", "config", "integrations"] as const).map((value) => (
           <button
             key={value}
             type="button"
@@ -2205,6 +2510,240 @@ export default function BrandStudioPage() {
                 </article>
               ))}
             </div>
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "monitoring" ? (
+        <section className="space-y-6">
+          <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-white">{t("monitoring.title")}</h2>
+              <button
+                type="button"
+                onClick={() => void runMonitoringScan()}
+                disabled={monitoringLoading}
+                className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-100 disabled:opacity-50"
+              >
+                {monitoringLoading ? t("monitoring.scanning") : t("monitoring.scan")}
+              </button>
+            </div>
+            {monitoringError ? <p className="text-rose-300 text-sm">{monitoringError}</p> : null}
+            {monitoringSummary ? (
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+                  <p className="text-xs uppercase text-zinc-400">{t("monitoring.keywords")}</p>
+                  <p className="text-2xl font-semibold text-white">{monitoringSummary.active_keywords}/{monitoringSummary.total_keywords}</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+                  <p className="text-xs uppercase text-zinc-400">{t("monitoring.coverage")}</p>
+                  <p className="text-2xl font-semibold text-emerald-300">{(monitoringSummary.owned_source_coverage * 100).toFixed(0)}%</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+                  <p className="text-xs uppercase text-zinc-400">{t("monitoring.risks")}</p>
+                  <p className={`text-2xl font-semibold ${monitoringSummary.risk_count > 0 ? "text-rose-300" : "text-white"}`}>{monitoringSummary.risk_count}</p>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-zinc-300">{t("monitoring.results")}</h3>
+            {monitoringResults.length === 0 ? (
+              <p className="text-zinc-400 text-sm">{t("monitoring.noResults")}</p>
+            ) : (
+              <div className="space-y-2">
+                {monitoringResults.slice(0, 20).map((result) => (
+                  <div key={result.result_id} className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3 text-sm">
+                    <div className="flex flex-wrap gap-2 mb-1 text-xs">
+                      <span className={`rounded px-2 py-0.5 ${result.maps_to_base_source ? "bg-emerald-900/40 text-emerald-200" : result.classification === "brand_mention_risk" ? "bg-rose-900/40 text-rose-200" : "bg-zinc-800 text-zinc-300"}`}>
+                        {result.classification}
+                      </span>
+                      <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-300">#{result.position}</span>
+                    </div>
+                    <p className="text-zinc-200 font-medium">{result.title}</p>
+                    <a href={result.url} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:underline break-all">{result.url}</a>
+                    <p className="text-xs text-zinc-400 mt-1">{result.snippet}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "sources" ? (
+        <section className="space-y-6">
+          <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-4">
+            <h2 className="text-lg font-semibold text-white">{t("sources.title")}</h2>
+            <div className="grid gap-3 md:grid-cols-4">
+              <input
+                value={newSourceName}
+                onChange={(e) => setNewSourceName(e.target.value)}
+                placeholder={t("sources.name")}
+                className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              />
+              <input
+                value={newSourceUrl}
+                onChange={(e) => setNewSourceUrl(e.target.value)}
+                placeholder={t("sources.url")}
+                className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              />
+              <select
+                value={newSourceChannel}
+                onChange={(e) => setNewSourceChannel(e.target.value as PublishChannel)}
+                className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              >
+                {CHANNELS.map((ch) => <option key={ch} value={ch}>{ch}</option>)}
+              </select>
+              <button
+                type="button"
+                onClick={() => void addBaseSource()}
+                disabled={sourcesLoading}
+                className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-100 disabled:opacity-50"
+              >
+                {t("sources.add")}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {baseSources.length === 0 ? (
+              <p className="text-zinc-400 text-sm">{t("sources.empty")}</p>
+            ) : (
+              baseSources.map((src) => (
+                <div key={src.source_id} className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3 flex items-center justify-between text-sm">
+                  <div>
+                    <span className="text-zinc-200 font-medium">{src.name}</span>
+                    <span className="ml-2 text-xs text-zinc-400">{src.channel}</span>
+                    <a href={src.base_url} target="_blank" rel="noopener noreferrer" className="ml-2 text-xs text-cyan-400 hover:underline">{src.base_url}</a>
+                    {!src.enabled ? <span className="ml-2 rounded bg-zinc-700 px-1 text-xs text-zinc-400">{t("sources.disabled")}</span> : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void deleteBaseSource(src.source_id)}
+                    disabled={sourcesLoading}
+                    className="rounded-lg border border-rose-500/40 px-2 py-1 text-xs text-rose-100 disabled:opacity-50"
+                  >
+                    {t("sources.delete")}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "keywords" ? (
+        <section className="space-y-6">
+          <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-4">
+            <h2 className="text-lg font-semibold text-white">{t("keywords.title")}</h2>
+            <div className="grid gap-3 md:grid-cols-3">
+              <input
+                value={newKeywordPhrase}
+                onChange={(e) => setNewKeywordPhrase(e.target.value)}
+                placeholder={t("keywords.phrase")}
+                className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              />
+              <select
+                value={newKeywordType}
+                onChange={(e) => setNewKeywordType(e.target.value as KeywordType)}
+                className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              >
+                {(["brand_core", "brand_product", "brand_person", "risk_term", "competitor_context"] as const).map((t_) => (
+                  <option key={t_} value={t_}>{t_}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void addKeyword()}
+                disabled={keywordsLoading}
+                className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-100 disabled:opacity-50"
+              >
+                {t("keywords.add")}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {keywords.length === 0 ? (
+              <p className="text-zinc-400 text-sm">{t("keywords.empty")}</p>
+            ) : (
+              keywords.map((kw) => (
+                <div key={kw.keyword_id} className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3 flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-200 font-medium">{kw.phrase}</span>
+                    <span className="rounded bg-cyan-900/40 px-2 py-0.5 text-xs text-cyan-200">{kw.keyword_type}</span>
+                    <span className="text-xs text-zinc-400">P{kw.priority}</span>
+                    {!kw.active ? <span className="rounded bg-zinc-700 px-1 text-xs text-zinc-400">{t("keywords.inactive")}</span> : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void deleteKeyword(kw.keyword_id)}
+                    disabled={keywordsLoading}
+                    className="rounded-lg border border-rose-500/40 px-2 py-1 text-xs text-rose-100 disabled:opacity-50"
+                  >
+                    {t("keywords.delete")}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "campaigns" ? (
+        <section className="space-y-6">
+          <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-4">
+            <h2 className="text-lg font-semibold text-white">{t("campaigns.title")}</h2>
+            {campaignsError ? <p className="text-rose-300 text-sm">{campaignsError}</p> : null}
+            <div className="grid gap-3 md:grid-cols-2">
+              <input
+                value={newCampaignName}
+                onChange={(e) => setNewCampaignName(e.target.value)}
+                placeholder={t("campaigns.name")}
+                className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              />
+              <button
+                type="button"
+                onClick={() => void createCampaign()}
+                disabled={campaignsLoading}
+                className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-100 disabled:opacity-50"
+              >
+                {t("campaigns.create")}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {campaigns.length === 0 ? (
+              <p className="text-zinc-400 text-sm">{t("campaigns.empty")}</p>
+            ) : (
+              campaigns.map((camp) => (
+                <div key={camp.campaign_id} className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-4 text-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-zinc-200 font-semibold">{camp.name}</span>
+                      <span className={`rounded px-2 py-0.5 text-xs ${camp.status === "running" ? "bg-cyan-900/40 text-cyan-200" : camp.status === "completed" ? "bg-emerald-900/40 text-emerald-200" : camp.status === "failed" ? "bg-rose-900/40 text-rose-200" : "bg-zinc-800 text-zinc-300"}`}>
+                        {camp.status}
+                      </span>
+                    </div>
+                    {camp.status !== "completed" && camp.status !== "failed" && camp.status !== "cancelled" ? (
+                      <button
+                        type="button"
+                        onClick={() => void runCampaign(camp.campaign_id)}
+                        disabled={campaignsLoading || camp.status === "running"}
+                        className="rounded-lg border border-emerald-500/40 px-3 py-1 text-xs text-emerald-100 disabled:opacity-50"
+                      >
+                        {t("campaigns.run")}
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-1 text-xs text-zinc-400">
+                    {camp.channels.map((ch) => (
+                      <span key={ch} className="rounded bg-zinc-800 px-2 py-0.5">{ch}</span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-1">{t("campaigns.created")}: {new Date(camp.created_at).toLocaleString()}</p>
+                </div>
+              ))
+            )}
           </div>
         </section>
       ) : null}
