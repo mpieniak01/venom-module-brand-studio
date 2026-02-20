@@ -2295,6 +2295,71 @@ class BrandStudioService:
                 actor=actor, action="base_source.delete", status="ok", payload=source_id
             )
 
+    def _monitoring_schedule_interval_seconds(self) -> int | None:
+        cron_expr = (os.getenv("BRAND_STUDIO_MONITORING_SCHEDULE_CRON") or "").strip().lower()
+        if cron_expr:
+            cron_aliases = {
+                "@hourly": 3600,
+                "@daily": 86400,
+                "@weekly": 604800,
+            }
+            if cron_expr in cron_aliases:
+                return cron_aliases[cron_expr]
+            match = re.fullmatch(r"\*/(\d+)\s+\*\s+\*\s+\*\s+\*", cron_expr)
+            if match:
+                minutes = int(match.group(1))
+                if minutes > 0:
+                    return minutes * 60
+            logger.warning(
+                "Unsupported BRAND_STUDIO_MONITORING_SCHEDULE_CRON format: %s "
+                "(supported: @hourly/@daily/@weekly or */N * * * *)",
+                cron_expr,
+            )
+            return None
+
+        interval_minutes_raw = (os.getenv("BRAND_STUDIO_MONITORING_SCHEDULE_MINUTES") or "").strip()
+        if not interval_minutes_raw:
+            return None
+        try:
+            interval_minutes = int(interval_minutes_raw)
+        except ValueError:
+            logger.warning(
+                "Invalid BRAND_STUDIO_MONITORING_SCHEDULE_MINUTES value: %s",
+                interval_minutes_raw,
+            )
+            return None
+        if interval_minutes <= 0:
+            return None
+        return interval_minutes * 60
+
+    def run_scheduled_monitoring_scan_if_due(self) -> bool:
+        if not self._monitoring_enabled():
+            return False
+        interval_seconds = self._monitoring_schedule_interval_seconds()
+        if interval_seconds is None:
+            return False
+
+        now = _utcnow()
+        with self._lock:
+            if not any(kw.active for kw in self._keywords.values()):
+                return False
+            last_scan_at = self._scans[-1].scanned_at if self._scans else None
+            if last_scan_at and (now - last_scan_at).total_seconds() < interval_seconds:
+                return False
+            request_id = f"auto-scan:{int(now.timestamp()) // interval_seconds}"
+            if request_id in self._monitoring_request_id_to_scan:
+                return False
+
+        try:
+            self.monitoring_scan(
+                BrandMonitoringScanRequest(request_id=request_id),
+                actor="system:scheduler",
+            )
+            return True
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warning("Brand Studio scheduled monitoring scan failed: %s", exc)
+            return False
+
     # ---- Monitoring scan ----
 
     def _classify_result(

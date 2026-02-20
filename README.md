@@ -71,10 +71,15 @@ In `/home/ubuntu/venom/.env`:
 API_OPTIONAL_MODULES=manifest:/home/ubuntu/venom/modules/venom-module-brand-studio/module.json
 FEATURE_BRAND_STUDIO=true
 NEXT_PUBLIC_FEATURE_BRAND_STUDIO=true
+FEATURE_BRAND_STUDIO_MONITORING=true
 BRAND_STUDIO_ALLOWED_USERS=
 BRAND_STUDIO_DISCOVERY_MODE=hybrid
 BRAND_STUDIO_RSS_URLS=https://example.org/feed.xml,https://example.org/another-feed.xml
 BRAND_STUDIO_CACHE_TTL_SECONDS=1800
+BRAND_STUDIO_MONITORING_SCHEDULE_CRON=*/30 * * * *
+BRAND_STUDIO_MONITORING_FILE=/tmp/venom-brand-studio/monitoring-state.json
+BRAND_STUDIO_GOOGLE_CSE_API_KEY=<api-key>
+BRAND_STUDIO_GOOGLE_CSE_CX=<search-engine-id>
     BRAND_STUDIO_CACHE_FILE=/tmp/venom-brand-studio/candidates-cache.json
     BRAND_STUDIO_STATE_FILE=/tmp/venom-brand-studio/runtime-state.json
     BRAND_STUDIO_ACCOUNTS_FILE=/tmp/venom-brand-studio/accounts-state.json
@@ -114,6 +119,15 @@ After changing env values, restart Venom services.
 1. Queue and audit are persisted in `BRAND_STUDIO_STATE_FILE`.
 2. After backend restart, queue and audit entries are restored from local state file.
 3. Channel accounts and account telemetry are persisted in `BRAND_STUDIO_ACCOUNTS_FILE`.
+
+### Brand monitoring schedule (161_G)
+1. Monitoring API can be disabled independently via `FEATURE_BRAND_STUDIO_MONITORING=false`.
+2. Automatic monitoring scans are enabled with one of:
+   - `BRAND_STUDIO_MONITORING_SCHEDULE_CRON`:
+     - supported values: `@hourly`, `@daily`, `@weekly`, `*/N * * * *`,
+   - `BRAND_STUDIO_MONITORING_SCHEDULE_MINUTES` (fallback when CRON is not set).
+3. Scheduled scans are triggered lazily on monitoring reads (`/monitoring/summary`, `/monitoring/results`) when interval is due.
+4. Monitoring entities (keywords/sources/scans/campaigns/idempotency keys) are persisted in `BRAND_STUDIO_MONITORING_FILE`.
 
 ### Channel capability matrix (161_C)
 1. `github` / `blog`: real publish connector.

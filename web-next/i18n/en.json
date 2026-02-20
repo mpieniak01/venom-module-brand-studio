@@ -76,6 +76,7 @@
   "tabs.sources": "Base Sources",
   "tabs.keywords": "Keywords",
   "tabs.campaigns": "Campaigns",
+  "tabs.audit": "Audit",
   "monitoring.title": "Brand Monitoring",
   "monitoring.scan": "Run scan",
   "monitoring.scanning": "Scanning...",

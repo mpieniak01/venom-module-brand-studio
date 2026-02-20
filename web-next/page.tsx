@@ -20,7 +20,15 @@ type PublishChannel =
   | "devto"
   | "hashnode";
 type Channel = "all" | PublishChannel;
-type Tab = "radar" | "monitoring" | "sources" | "keywords" | "campaigns" | "config" | "integrations";
+type Tab =
+  | "radar"
+  | "monitoring"
+  | "sources"
+  | "keywords"
+  | "campaigns"
+  | "audit"
+  | "config"
+  | "integrations";
 type DiscoveryMode = "stub" | "hybrid" | "live";
 type IntegrationId =
   | "github_publish"
@@ -288,6 +296,8 @@ const PL_HELP: Record<string, string> = {
     "Konfiguracja steruje strategią discovery i publikacji. Zmiany wpływają na kolejne odświeżenia i drafty.",
   "tabs.integrations":
     "API i klucze pokazuje stan integracji oraz kont kanałowych używanych do publikacji.",
+  "tabs.audit":
+    "Audit to historia operacji modułu. Użyj filtrów, aby szybko przejść od kampanii do konkretnych zdarzeń.",
   "stats.count": "Liczba kandydatów, które przeszły aktualne filtry.",
   "stats.topScore": "Najwyższy wynik jakości/relewancji w aktualnej liście kandydatów.",
   "stats.freshest": "Wiek czasowy najświeższego kandydata po filtrach.",
@@ -418,6 +428,14 @@ function TabIcon({ tab }: Readonly<{ tab: Tab }>) {
     return (
       <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+      </svg>
+    );
+  }
+  if (tab === "audit") {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 11l3 3L22 4" />
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
       </svg>
     );
   }
@@ -1591,7 +1609,7 @@ export default function BrandStudioPage() {
       </div>
 
       <section className="flex flex-wrap gap-2 border-b border-white/10">
-        {(["radar", "monitoring", "sources", "keywords", "campaigns", "config", "integrations"] as const).map((value) => (
+        {(["radar", "monitoring", "sources", "keywords", "campaigns", "audit", "config", "integrations"] as const).map((value) => (
           <button
             key={value}
             type="button"
@@ -2833,6 +2851,109 @@ export default function BrandStudioPage() {
                 </div>
               ))
             )}
+          </div>
+        </section>
+      ) : null}
+
+      {tab === "audit" ? (
+        <section className="glass-panel space-y-3 rounded-2xl border border-cyan-500/20 p-4">
+          <h2 className="inline-flex items-center gap-2 text-lg font-medium text-cyan-100">
+            {t("audit.title")}
+            <HelpBadge tip={help("audit.title")} />
+          </h2>
+          {auditLoading ? <p className="text-zinc-400">{t("audit.loading")}</p> : null}
+          {auditError ? <p className="text-rose-300">{auditError}</p> : null}
+          {!auditLoading && !audit.length ? <p className="text-zinc-400">{t("audit.empty")}</p> : null}
+          <div className="grid gap-2 md:grid-cols-3">
+            <label className="space-y-1">
+              <span className="text-[11px] uppercase text-zinc-500">
+                {lang === "pl" ? "Filtr API/akcji" : "API/action filter"}
+              </span>
+              <select
+                value={auditCategoryFilter}
+                onChange={(event) =>
+                  setAuditCategoryFilter(
+                    event.target.value as
+                      | "all"
+                      | "queue"
+                      | "draft"
+                      | "integration"
+                      | "config"
+                      | "strategy"
+                      | "channel"
+                  )
+                }
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+              >
+                <option value="all">{lang === "pl" ? "Wszystkie akcje" : "All actions"}</option>
+                <option value="queue">queue.*</option>
+                <option value="draft">draft.*</option>
+                <option value="integration">integration.*</option>
+                <option value="config">config.*</option>
+                <option value="strategy">strategy.*</option>
+                <option value="channel">channel.*</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[11px] uppercase text-zinc-500">
+                {lang === "pl" ? "Filtr statusu" : "Status filter"}
+              </span>
+              <select
+                value={auditStatusFilter}
+                onChange={(event) => setAuditStatusFilter(event.target.value)}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+              >
+                <option value="all">{lang === "pl" ? "Wszystkie statusy" : "All statuses"}</option>
+                <option value="ok">ok</option>
+                <option value="queued">queued</option>
+                <option value="published">published</option>
+                <option value="failed">failed</option>
+                <option value="manual">manual</option>
+                <option value="partial">partial</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[11px] uppercase text-zinc-500">
+                {lang === "pl" ? "Wynik" : "Outcome"}
+              </span>
+              <select
+                value={auditOutcomeFilter}
+                onChange={(event) =>
+                  setAuditOutcomeFilter(event.target.value as "all" | LogOutcome)
+                }
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+              >
+                <option value="all">{lang === "pl" ? "Wszystkie" : "All"}</option>
+                <option value="success">{lang === "pl" ? "Sukces" : "Success"}</option>
+                <option value="warning">{lang === "pl" ? "Warning" : "Warning"}</option>
+                <option value="error">{lang === "pl" ? "Błąd" : "Error"}</option>
+              </select>
+            </label>
+          </div>
+          <div
+            className="space-y-2 pr-2"
+            style={{
+              maxHeight: "690px",
+              overflowY: "scroll",
+              scrollbarGutter: "stable",
+              overscrollBehavior: "contain",
+            }}
+          >
+            {filteredAudit.map((entry) => (
+              <article key={entry.id} className="min-h-[44px] rounded-lg border border-zinc-800 p-3">
+                <div className="flex flex-wrap items-center gap-3 text-xs">
+                  <span
+                    className={`rounded border px-2 py-1 uppercase ${outcomeClass(
+                      auditOutcome(entry.status)
+                    )}`}
+                  >
+                    {entry.action} / {entry.status}
+                  </span>
+                  <span className="text-zinc-500">{entry.actor}</span>
+                  <span className="text-zinc-500">{new Date(entry.timestamp).toLocaleString()}</span>
+                </div>
+              </article>
+            ))}
           </div>
         </section>
       ) : null}

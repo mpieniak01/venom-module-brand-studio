@@ -545,6 +545,33 @@ def test_monitoring_scan_idempotency() -> None:
     assert scan2.status_code == 200
 
 
+def test_monitoring_summary_triggers_scheduled_scan(monkeypatch) -> None:
+    monkeypatch.setenv("FEATURE_BRAND_STUDIO_MONITORING", "true")
+    monkeypatch.setenv("BRAND_STUDIO_MONITORING_SCHEDULE_CRON", "*/5 * * * *")
+    client = build_client()
+
+    client.post(
+        "/api/v1/brand-studio/monitoring/keywords",
+        json={"phrase": "scheduled brand"},
+        headers=AUTH_HEADERS,
+    )
+
+    summary_first = client.get("/api/v1/brand-studio/monitoring/summary")
+    assert summary_first.status_code == 200
+    assert summary_first.json()["last_scan_at"] is not None
+
+    results_after_first = client.get("/api/v1/brand-studio/monitoring/results")
+    assert results_after_first.status_code == 200
+    first_count = results_after_first.json()["count"]
+    assert first_count > 0
+
+    summary_second = client.get("/api/v1/brand-studio/monitoring/summary")
+    assert summary_second.status_code == 200
+    results_after_second = client.get("/api/v1/brand-studio/monitoring/results")
+    assert results_after_second.status_code == 200
+    assert results_after_second.json()["count"] == first_count
+
+
 def test_monitoring_disabled_returns_403(monkeypatch) -> None:
     monkeypatch.setenv("FEATURE_BRAND_STUDIO_MONITORING", "false")
     client = build_client()

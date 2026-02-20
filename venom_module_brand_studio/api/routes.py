@@ -797,6 +797,7 @@ async def monitoring_results(
     _actor: OptionalActorDep,
     scan_id: Annotated[str | None, Query()] = None,
 ) -> BrandMonitoringResultsResponse:
+    service.run_scheduled_monitoring_scan_if_due()
     items = service.monitoring_results(scan_id=scan_id)
     return BrandMonitoringResultsResponse(count=len(items), scan_id=scan_id, items=items)
 
@@ -808,6 +809,7 @@ async def monitoring_summary(
     service: ServiceDep,
     _actor: OptionalActorDep,
 ) -> BrandMonitoringSummary:
+    service.run_scheduled_monitoring_scan_if_due()
     return service.monitoring_summary()
 
 
