@@ -8,6 +8,23 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from venom_module_brand_studio.api.schemas import (
     AuditResponse,
+    BrandBaseSource,
+    BrandBaseSourceCreateRequest,
+    BrandBaseSourcesResponse,
+    BrandBaseSourceUpdateRequest,
+    BrandCampaignCreateRequest,
+    BrandCampaignResponse,
+    BrandCampaignRunResponse,
+    BrandCampaignsResponse,
+    BrandCampaignUpdateRequest,
+    BrandKeyword,
+    BrandKeywordCreateRequest,
+    BrandKeywordsResponse,
+    BrandKeywordUpdateRequest,
+    BrandMonitoringResultsResponse,
+    BrandMonitoringScanRequest,
+    BrandMonitoringScanResponse,
+    BrandMonitoringSummary,
     CandidatesResponse,
     ChannelAccountCreateRequest,
     ChannelAccountResponse,
@@ -164,6 +181,18 @@ OptionalActorDep = Annotated[str, Depends(_actor_optional)]
 AutonomyDep = Annotated[None, Depends(_autonomy_guard)]
 
 
+def _monitoring_guard() -> None:
+    enabled = (os.getenv("FEATURE_BRAND_STUDIO_MONITORING") or "true").strip().lower()
+    if enabled in {"0", "false", "off", "no"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Brand Studio monitoring feature disabled",
+        )
+
+
+MonitoringDep = Annotated[None, Depends(_monitoring_guard)]
+
+
 @router.get("/sources/candidates", response_model=CandidatesResponse)
 async def list_candidates(
     _feature: FeatureDep,
@@ -212,6 +241,7 @@ async def generate_draft(
             languages=payload.languages,
             tone=payload.tone,
             actor=actor,
+            campaign_id=payload.campaign_id,
         )
     except KeyError as exc:
         if str(exc).strip("'") == "candidate_not_found":
@@ -246,6 +276,7 @@ async def queue_draft(
                 target_path=payload.target_path,
                 payload_override=payload.payload_override,
                 actor=actor,
+                campaign_id=payload.campaign_id,
             )
     except KeyError as exc:
         if str(exc).strip("'") in {"draft_not_found", "draft_variant_not_found"}:
@@ -309,8 +340,9 @@ async def list_queue(
     _feature: FeatureDep,
     service: ServiceDep,
     _actor: OptionalActorDep,
+    campaign_id: Annotated[str | None, Query()] = None,
 ) -> QueueResponse:
-    items = service.queue_items()
+    items = service.queue_items(campaign_id=campaign_id)
     return QueueResponse(count=len(items), items=items)
 
 
@@ -591,3 +623,319 @@ async def test_channel_account(
 ) -> ChannelAccountTestResponse:
     with _account_not_found_as_http_404():
         return service.test_channel_account(channel, account_id, actor=actor)
+
+
+# ---- Monitoring: Keywords ----
+
+@router.get("/monitoring/keywords", response_model=BrandKeywordsResponse)
+async def list_keywords(
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> BrandKeywordsResponse:
+    items = service.keywords_list()
+    return BrandKeywordsResponse(count=len(items), items=items)
+
+
+@router.post("/monitoring/keywords", response_model=BrandKeyword)
+async def create_keyword(
+    payload: BrandKeywordCreateRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandKeyword:
+    return service.keyword_create(payload, actor=actor)
+
+
+@router.patch(
+    "/monitoring/keywords/{keyword_id}",
+    response_model=BrandKeyword,
+    responses={404: {"description": "Keyword not found"}},
+)
+async def update_keyword(
+    keyword_id: str,
+    payload: BrandKeywordUpdateRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandKeyword:
+    try:
+        return service.keyword_update(keyword_id, payload, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Keyword not found"
+        ) from exc
+
+
+@router.delete(
+    "/monitoring/keywords/{keyword_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "Keyword not found"}},
+)
+async def delete_keyword(
+    keyword_id: str,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> None:
+    try:
+        service.keyword_delete(keyword_id, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Keyword not found"
+        ) from exc
+
+
+# ---- Monitoring: Base Sources ----
+
+@router.get("/monitoring/sources", response_model=BrandBaseSourcesResponse)
+async def list_base_sources(
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> BrandBaseSourcesResponse:
+    items = service.base_sources_list()
+    return BrandBaseSourcesResponse(count=len(items), items=items)
+
+
+@router.post(
+    "/monitoring/sources",
+    response_model=BrandBaseSource,
+    responses={409: {"description": "Duplicate base source URL"}},
+)
+async def create_base_source(
+    payload: BrandBaseSourceCreateRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandBaseSource:
+    try:
+        return service.base_source_create(payload, actor=actor)
+    except ValueError as exc:
+        if str(exc) == "base_source_url_duplicate":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Duplicate base source URL"
+            ) from exc
+        raise
+
+
+@router.patch(
+    "/monitoring/sources/{source_id}",
+    response_model=BrandBaseSource,
+    responses={404: {"description": "Base source not found"}},
+)
+async def update_base_source(
+    source_id: str,
+    payload: BrandBaseSourceUpdateRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandBaseSource:
+    try:
+        return service.base_source_update(source_id, payload, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Base source not found"
+        ) from exc
+
+
+@router.delete(
+    "/monitoring/sources/{source_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "Base source not found"}},
+)
+async def delete_base_source(
+    source_id: str,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> None:
+    try:
+        service.base_source_delete(source_id, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Base source not found"
+        ) from exc
+
+
+# ---- Monitoring: Scan, Results, Summary ----
+
+@router.post(
+    "/monitoring/scan",
+    response_model=BrandMonitoringScanResponse,
+)
+async def monitoring_scan(
+    payload: BrandMonitoringScanRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandMonitoringScanResponse:
+    return service.monitoring_scan(payload, actor=actor)
+
+
+@router.get("/monitoring/results", response_model=BrandMonitoringResultsResponse)
+async def monitoring_results(
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+    scan_id: Annotated[str | None, Query()] = None,
+) -> BrandMonitoringResultsResponse:
+    items = service.monitoring_results(scan_id=scan_id)
+    return BrandMonitoringResultsResponse(count=len(items), scan_id=scan_id, items=items)
+
+
+@router.get("/monitoring/summary", response_model=BrandMonitoringSummary)
+async def monitoring_summary(
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> BrandMonitoringSummary:
+    return service.monitoring_summary()
+
+
+# ---- Campaigns ----
+
+@router.get("/campaigns", response_model=BrandCampaignsResponse)
+async def list_campaigns(
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> BrandCampaignsResponse:
+    items = service.campaigns_list()
+    return BrandCampaignsResponse(count=len(items), items=items)
+
+
+@router.post("/campaigns", response_model=BrandCampaignResponse)
+async def create_campaign(
+    payload: BrandCampaignCreateRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandCampaignResponse:
+    item = service.campaign_create(payload, actor=actor)
+    return BrandCampaignResponse(item=item)
+
+
+@router.get(
+    "/campaigns/{campaign_id}",
+    response_model=BrandCampaignResponse,
+    responses={404: {"description": "Campaign not found"}},
+)
+async def get_campaign(
+    campaign_id: str,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    _actor: OptionalActorDep,
+) -> BrandCampaignResponse:
+    try:
+        item = service.campaign_get(campaign_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        ) from exc
+    return BrandCampaignResponse(item=item)
+
+
+@router.patch(
+    "/campaigns/{campaign_id}",
+    response_model=BrandCampaignResponse,
+    responses={404: {"description": "Campaign not found"}},
+)
+async def update_campaign(
+    campaign_id: str,
+    payload: BrandCampaignUpdateRequest,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandCampaignResponse:
+    try:
+        item = service.campaign_update(campaign_id, payload, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        ) from exc
+    return BrandCampaignResponse(item=item)
+
+
+@router.post(
+    "/campaigns/{campaign_id}/run",
+    response_model=BrandCampaignRunResponse,
+    responses={
+        404: {"description": "Campaign not found"},
+        409: {"description": "Campaign already in terminal state"},
+    },
+)
+async def run_campaign(
+    campaign_id: str,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> BrandCampaignRunResponse:
+    try:
+        return service.campaign_run(campaign_id, request_id=x_request_id, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        ) from exc
+    except ValueError as exc:
+        if str(exc) == "campaign_already_terminal":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Campaign is already in a terminal state",
+            ) from exc
+        raise
+
+
+@router.post(
+    "/campaigns/{campaign_id}/drafts/{draft_id}",
+    response_model=BrandCampaignResponse,
+    responses={
+        404: {"description": "Campaign or draft not found"},
+    },
+)
+async def link_draft_to_campaign(
+    campaign_id: str,
+    draft_id: str,
+    _feature: FeatureDep,
+    _monitoring: MonitoringDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandCampaignResponse:
+    try:
+        item = service.campaign_link_draft(campaign_id, draft_id, actor=actor)
+    except KeyError as exc:
+        detail = (
+            "Campaign not found"
+            if str(exc).strip("'") == "campaign_not_found"
+            else "Draft not found"
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail) from exc
+    return BrandCampaignResponse(item=item)
