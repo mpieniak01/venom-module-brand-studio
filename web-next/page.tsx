@@ -255,6 +255,8 @@ const CHANNELS: PublishChannel[] = [
 
 const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
+const MAX_CAMPAIGN_NAME_LENGTH = 60;
+
 const DEFAULT_FORM: StrategyConfig = {
   id: "",
   name: "",
@@ -1508,7 +1510,7 @@ export default function BrandStudioPage() {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
         body: JSON.stringify({
-          name: resultTitle.slice(0, 60) || "Campaign from monitoring",
+          name: resultTitle.slice(0, MAX_CAMPAIGN_NAME_LENGTH) || "Campaign from monitoring",
           channels: ["x"],
           linked_result_ids: [resultId],
         }),

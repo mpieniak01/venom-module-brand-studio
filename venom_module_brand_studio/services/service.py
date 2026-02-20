@@ -2579,6 +2579,7 @@ class BrandStudioService:
                                 draft.draft_id,
                                 channel,
                                 exc,
+                                exc_info=True,
                             )
 
             updated = item.model_copy(

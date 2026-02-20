@@ -628,8 +628,7 @@ def test_campaign_run_with_linked_results_generates_drafts_and_queue() -> None:
         headers=AUTH_HEADERS,
     )
     results = scan_resp.json()["results"]
-    if not results:
-        return
+    assert len(results) >= 1, "Stub scan should always produce results for an active keyword"
     result_id = results[0]["result_id"]
 
     # Create campaign with linked result
