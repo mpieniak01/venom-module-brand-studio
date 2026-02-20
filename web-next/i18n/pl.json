@@ -103,5 +103,10 @@
   "campaigns.create": "Utwórz kampanię",
   "campaigns.empty": "Brak kampanii.",
   "campaigns.run": "Uruchom",
-  "campaigns.created": "Utworzono"
+  "campaigns.created": "Utworzono",
+  "monitoring.createCampaign": "Utwórz kampanię",
+  "campaigns.drafts": "Drafty",
+  "campaigns.queued": "W kolejce",
+  "queue.campaign": "Kampania",
+  "queue.allCampaigns": "Wszystkie"
 }

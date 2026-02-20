@@ -1111,6 +1111,7 @@ class BrandStudioService:
         languages: list[str],
         tone: str | None,
         actor: str,
+        campaign_id: str | None = None,
     ) -> DraftBundle:
         candidate = next((it for it in self._candidates if it.id == candidate_id), None)
         if candidate is None:
@@ -1133,9 +1134,12 @@ class BrandStudioService:
                 variants.append(DraftVariant(channel=channel, language=language, content=content))
 
         draft_id = f"draft-{uuid4().hex[:10]}"
-        bundle = DraftBundle(draft_id=draft_id, candidate_id=candidate_id, variants=variants)
+        bundle = DraftBundle(
+            draft_id=draft_id, candidate_id=candidate_id, variants=variants, campaign_id=campaign_id
+        )
         self._drafts[draft_id] = bundle
-        self._add_audit(actor=actor, action="draft.generate", status="ok", payload=draft_id)
+        audit_payload = f"{draft_id}:campaign={campaign_id}" if campaign_id else draft_id
+        self._add_audit(actor=actor, action="draft.generate", status="ok", payload=audit_payload)
         return bundle
 
     def queue_draft(
@@ -1150,6 +1154,7 @@ class BrandStudioService:
         payload_override: str | None,
         actor: str,
         account_id: str | None = None,
+        campaign_id: str | None = None,
     ) -> PublishQueueItem:
         with self._lock:
             bundle = self._drafts.get(draft_id)
@@ -1187,14 +1192,18 @@ class BrandStudioService:
                 status="queued",
                 created_at=now,
                 updated_at=now,
+                campaign_id=campaign_id,
             )
             self._queue[item.item_id] = item
             self._persist_runtime_state()
+            audit_payload = (
+                f"{item.item_id}:campaign={campaign_id}" if campaign_id else item.item_id
+            )
             self._add_audit(
                 actor=actor,
                 action="queue.create",
                 status="queued",
-                payload=item.item_id,
+                payload=audit_payload,
             )
             return item
 
@@ -1829,9 +1838,11 @@ class BrandStudioService:
                 message=f"Connector for channel '{item.target_channel}' is not implemented yet",
             )
 
-    def queue_items(self) -> list[PublishQueueItem]:
+    def queue_items(self, *, campaign_id: str | None = None) -> list[PublishQueueItem]:
         with self._lock:
             items = list(self._queue.values())
+            if campaign_id:
+                items = [it for it in items if it.campaign_id == campaign_id]
             items.sort(key=lambda it: it.created_at, reverse=True)
             return items
 
@@ -2497,21 +2508,129 @@ class BrandStudioService:
                     campaign_id=campaign_id,
                     status=item.status,
                     message="Idempotent: campaign run already initiated",
+                    draft_ids=list(item.draft_ids),
+                    queue_ids=list(item.queue_ids),
                 )
             now = _utcnow()
-            updated = item.model_copy(update={"status": "running", "updated_at": now})
+            created_draft_ids: list[str] = []
+            created_queue_ids: list[str] = []
+
+            if item.linked_result_ids:
+                strategy = self._active_strategy()
+                languages = list(strategy.draft_languages)
+                for result_id in item.linked_result_ids:
+                    result = next(
+                        (r for r in self._scan_results if r.result_id == result_id), None
+                    )
+                    if result is None:
+                        continue
+                    virtual_id = f"cand-campaign-{uuid4().hex[:8]}"
+                    from venom_module_brand_studio.api.schemas import (  # noqa: PLC0415
+                        ContentCandidate,
+                        OpportunityScoreBreakdown,
+                    )
+                    breakdown = OpportunityScoreBreakdown(
+                        relevance=0.5,
+                        timeliness=0.5,
+                        authority_fit=0.5,
+                        risk_penalty=0.0,
+                        final_score=0.5,
+                        reasons=["campaign-linked monitoring result"],
+                    )
+                    virtual_candidate = ContentCandidate(
+                        id=virtual_id,
+                        source="monitoring",
+                        url=result.url,
+                        topic=result.title,
+                        summary=result.snippet,
+                        language="en",
+                        score=0.5,
+                        age_minutes=0,
+                        score_breakdown=breakdown,
+                        reasons=["campaign-linked monitoring result"],
+                    )
+                    self._candidates.append(virtual_candidate)
+                    draft = self.generate_draft(
+                        candidate_id=virtual_id,
+                        channels=list(item.channels),
+                        languages=languages,
+                        tone=None,
+                        actor=actor,
+                        campaign_id=campaign_id,
+                    )
+                    created_draft_ids.append(draft.draft_id)
+                    for channel in item.channels:
+                        try:
+                            queue_item = self.queue_draft(
+                                draft_id=draft.draft_id,
+                                target_channel=channel,
+                                target_language=languages[0] if languages else "en",
+                                target=None,
+                                target_repo=None,
+                                target_path=None,
+                                payload_override=None,
+                                actor=actor,
+                                campaign_id=campaign_id,
+                            )
+                            created_queue_ids.append(queue_item.item_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+            updated = item.model_copy(
+                update={
+                    "status": "running",
+                    "updated_at": now,
+                    "draft_ids": list(item.draft_ids) + created_draft_ids,
+                    "queue_ids": list(item.queue_ids) + created_queue_ids,
+                }
+            )
             self._campaigns[campaign_id] = updated
             if run_key:
                 self._campaign_run_request_ids.add(run_key)
             self._persist_monitoring_state()
             self._add_audit(
-                actor=actor, action="campaign.run", status="ok", payload=campaign_id
+                actor=actor,
+                action="campaign.run",
+                status="ok",
+                payload=f"{campaign_id}:drafts={len(created_draft_ids)}:queued={len(created_queue_ids)}",
+            )
+            msg = (
+                f"Campaign started. Created {len(created_draft_ids)} draft(s), "
+                f"{len(created_queue_ids)} queue item(s)."
             )
             return BrandCampaignRunResponse(
                 campaign_id=campaign_id,
                 status="running",
-                message="Campaign started. Queue drafts to proceed with publishing.",
+                message=msg,
+                draft_ids=created_draft_ids,
+                queue_ids=created_queue_ids,
             )
+
+    def campaign_link_draft(self, campaign_id: str, draft_id: str, *, actor: str) -> BrandCampaign:
+        with self._lock:
+            campaign = self._campaigns.get(campaign_id)
+            if campaign is None:
+                raise KeyError("campaign_not_found")
+            bundle = self._drafts.get(draft_id)
+            if bundle is None:
+                raise KeyError("draft_not_found")
+            updated_draft_ids = list(campaign.draft_ids)
+            if draft_id not in updated_draft_ids:
+                updated_draft_ids.append(draft_id)
+            updated_bundle = bundle.model_copy(update={"campaign_id": campaign_id})
+            self._drafts[draft_id] = updated_bundle
+            updated_camp = campaign.model_copy(
+                update={"draft_ids": updated_draft_ids, "updated_at": _utcnow()}
+            )
+            self._campaigns[campaign_id] = updated_camp
+            self._persist_monitoring_state()
+            self._add_audit(
+                actor=actor,
+                action="campaign.link_draft",
+                status="ok",
+                payload=f"{campaign_id}:draft={draft_id}",
+            )
+            return updated_camp
 
     # ---- Monitoring persistence ----
 

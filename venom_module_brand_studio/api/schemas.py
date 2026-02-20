@@ -72,6 +72,7 @@ class DraftGenerateRequest(BaseModel):
     channels: list[BrandChannel] = Field(min_length=1)
     languages: list[DraftLanguage] = Field(min_length=1)
     tone: Literal["neutral", "expert", "short", "cta"] | None = None
+    campaign_id: str | None = None
 
 
 class DraftVariant(BaseModel):
@@ -84,6 +85,7 @@ class DraftBundle(BaseModel):
     draft_id: str
     candidate_id: str
     variants: list[DraftVariant]
+    campaign_id: str | None = None
 
 
 class QueueDraftRequest(BaseModel):
@@ -95,6 +97,7 @@ class QueueDraftRequest(BaseModel):
     target_path: str | None = None
     target_language: DraftLanguage | None = None
     payload_override: str | None = None
+    campaign_id: str | None = None
 
 
 class QueueCreateResponse(BaseModel):
@@ -131,6 +134,7 @@ class PublishQueueItem(BaseModel):
     status: PublishStatus
     created_at: datetime
     updated_at: datetime
+    campaign_id: str | None = None
 
 
 class QueueResponse(BaseModel):
@@ -440,6 +444,8 @@ class BrandCampaign(BaseModel):
     status: CampaignStatus
     created_at: datetime
     updated_at: datetime
+    draft_ids: list[str] = Field(default_factory=list)
+    queue_ids: list[str] = Field(default_factory=list)
 
 
 class BrandCampaignCreateRequest(BaseModel):
@@ -471,4 +477,13 @@ class BrandCampaignResponse(BaseModel):
 class BrandCampaignRunResponse(BaseModel):
     campaign_id: str
     status: CampaignStatus
+    message: str
+    draft_ids: list[str] = Field(default_factory=list)
+    queue_ids: list[str] = Field(default_factory=list)
+
+
+class BrandCampaignLinkDraftResponse(BaseModel):
+    campaign_id: str
+    draft_id: str
+    status: str
     message: str

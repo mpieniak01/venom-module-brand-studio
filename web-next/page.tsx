@@ -236,6 +236,8 @@ type BrandCampaign = {
   status: CampaignStatus;
   created_at: string;
   updated_at: string;
+  draft_ids: string[];
+  queue_ids: string[];
 };
 
 const CHANNELS: PublishChannel[] = [
@@ -1498,7 +1500,28 @@ export default function BrandStudioPage() {
     [loadCampaigns, loadAudit]
   );
 
-  const toggleChannel = (value: PublishChannel) => {
+  const createCampaignFromResult = useCallback(async (resultId: string, resultTitle: string) => {
+    setCampaignsLoading(true);
+    setCampaignsError(null);
+    try {
+      const resp = await fetch("/api/v1/brand-studio/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
+        body: JSON.stringify({
+          name: resultTitle.slice(0, 60) || "Campaign from monitoring",
+          channels: ["x"],
+          linked_result_ids: [resultId],
+        }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      await loadCampaigns();
+      setTab("campaigns");
+    } catch (err) {
+      setCampaignsError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setCampaignsLoading(false);
+    }
+  }, [loadCampaigns, setTab]);
     setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.active_channels.includes(value);
@@ -2574,6 +2597,14 @@ export default function BrandStudioPage() {
                     <p className="text-zinc-200 font-medium">{result.title}</p>
                     <a href={result.url} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:underline break-all">{result.url}</a>
                     <p className="text-xs text-zinc-400 mt-1">{result.snippet}</p>
+                    <button
+                      type="button"
+                      onClick={() => void createCampaignFromResult(result.result_id, result.title)}
+                      disabled={campaignsLoading}
+                      className="mt-2 rounded-lg border border-emerald-500/30 px-2 py-1 text-xs text-emerald-200 hover:border-emerald-400 disabled:opacity-50"
+                    >
+                      {t("monitoring.createCampaign")}
+                    </button>
                   </div>
                 ))}
               </div>
@@ -2752,6 +2783,11 @@ export default function BrandStudioPage() {
                     ))}
                   </div>
                   <p className="text-xs text-zinc-500 mt-1">{t("campaigns.created")}: {new Date(camp.created_at).toLocaleString()}</p>
+                  {(camp.draft_ids.length > 0 || camp.queue_ids.length > 0) ? (
+                    <p className="mt-1 text-xs text-zinc-400">
+                      {t("campaigns.drafts")}: {camp.draft_ids.length} · {t("campaigns.queued")}: {camp.queue_ids.length}
+                    </p>
+                  ) : null}
                 </div>
               ))
             )}

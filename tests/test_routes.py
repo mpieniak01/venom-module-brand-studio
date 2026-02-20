@@ -607,3 +607,170 @@ def test_campaigns_crud_and_run() -> None:
     # 404 for missing campaign
     resp_404 = client.get("/api/v1/brand-studio/campaigns/camp-missing")
     assert resp_404.status_code == 404
+
+
+def test_campaign_run_with_linked_results_generates_drafts_and_queue() -> None:
+    client = build_client()
+
+    # Create keyword
+    kw_resp = client.post(
+        "/api/v1/brand-studio/monitoring/keywords",
+        json={"phrase": "brand test"},
+        headers=AUTH_HEADERS,
+    )
+    kw_id = kw_resp.json()["keyword_id"]
+
+    # Run scan to get results
+    scan_resp = client.post(
+        "/api/v1/brand-studio/monitoring/scan",
+        json={},
+        headers=AUTH_HEADERS,
+    )
+    results = scan_resp.json()["results"]
+    if not results:
+        return
+    result_id = results[0]["result_id"]
+
+    # Create campaign with linked result
+    camp_resp = client.post(
+        "/api/v1/brand-studio/campaigns",
+        json={
+            "name": "Wired Campaign",
+            "channels": ["x"],
+            "linked_result_ids": [result_id],
+            "linked_keyword_ids": [kw_id],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert camp_resp.status_code == 200
+    campaign_id = camp_resp.json()["item"]["campaign_id"]
+
+    # Run campaign - should generate drafts and queue items
+    run_resp = client.post(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}/run",
+        headers=AUTH_HEADERS,
+    )
+    assert run_resp.status_code == 200
+    run_data = run_resp.json()
+    assert run_data["status"] == "running"
+    assert len(run_data["draft_ids"]) >= 1
+    assert len(run_data["queue_ids"]) >= 1
+
+    # Verify campaign now has draft_ids and queue_ids
+    get_resp = client.get(f"/api/v1/brand-studio/campaigns/{campaign_id}")
+    assert get_resp.status_code == 200
+    camp_data = get_resp.json()["item"]
+    assert len(camp_data["draft_ids"]) >= 1
+    assert len(camp_data["queue_ids"]) >= 1
+
+    # Queue items for this campaign should be filterable
+    queue_resp = client.get(
+        "/api/v1/brand-studio/queue",
+        params={"campaign_id": campaign_id},
+    )
+    assert queue_resp.status_code == 200
+    assert queue_resp.json()["count"] >= 1
+    for qi in queue_resp.json()["items"]:
+        assert qi["campaign_id"] == campaign_id
+
+    # Queue items should also have campaign_id set
+    all_queue = client.get("/api/v1/brand-studio/queue").json()["items"]
+    campaign_items = [it for it in all_queue if it.get("campaign_id") == campaign_id]
+    assert len(campaign_items) >= 1
+
+
+def test_generate_draft_with_campaign_id_tracks_campaign() -> None:
+    client = build_client()
+
+    # Create campaign
+    camp_resp = client.post(
+        "/api/v1/brand-studio/campaigns",
+        json={"name": "Draft-Track Campaign", "channels": ["x"]},
+        headers=AUTH_HEADERS,
+    )
+    campaign_id = camp_resp.json()["item"]["campaign_id"]
+
+    # Generate draft with campaign_id
+    candidates = client.get("/api/v1/brand-studio/sources/candidates").json()["items"]
+    candidate_id = candidates[0]["id"]
+
+    draft_resp = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={
+            "candidate_id": candidate_id,
+            "channels": ["x"],
+            "languages": ["pl"],
+            "campaign_id": campaign_id,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert draft_resp.status_code == 200
+    assert draft_resp.json()["campaign_id"] == campaign_id
+
+    # Queue with campaign_id
+    draft_id = draft_resp.json()["draft_id"]
+    queue_resp = client.post(
+        f"/api/v1/brand-studio/drafts/{draft_id}/queue",
+        json={"target_channel": "x", "campaign_id": campaign_id},
+        headers=AUTH_HEADERS,
+    )
+    assert queue_resp.status_code == 200
+
+    # Audit should mention campaign
+    import hashlib
+    audit_resp = client.get("/api/v1/brand-studio/audit")
+    assert audit_resp.status_code == 200
+    actions = [e["action"] for e in audit_resp.json()["items"]]
+    # draft.generate and queue.create with campaign_id should be in audit
+    assert "draft.generate" in actions
+    assert "queue.create" in actions
+    # Verify the payload hashes match what we expect
+    draft_payload_hash = hashlib.sha256(
+        f"{draft_id}:campaign={campaign_id}".encode()
+    ).hexdigest()
+    hashes = [e["payload_hash"] for e in audit_resp.json()["items"]]
+    assert draft_payload_hash in hashes
+
+
+def test_link_draft_to_campaign() -> None:
+    client = build_client()
+
+    # Create campaign
+    camp_resp = client.post(
+        "/api/v1/brand-studio/campaigns",
+        json={"name": "Link Test Campaign", "channels": ["x"]},
+        headers=AUTH_HEADERS,
+    )
+    campaign_id = camp_resp.json()["item"]["campaign_id"]
+
+    # Generate standalone draft
+    candidates = client.get("/api/v1/brand-studio/sources/candidates").json()["items"]
+    candidate_id = candidates[0]["id"]
+    draft_resp = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={"candidate_id": candidate_id, "channels": ["x"], "languages": ["pl"]},
+        headers=AUTH_HEADERS,
+    )
+    draft_id = draft_resp.json()["draft_id"]
+
+    # Link draft to campaign
+    link_resp = client.post(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}/drafts/{draft_id}",
+        headers=AUTH_HEADERS,
+    )
+    assert link_resp.status_code == 200
+    assert draft_id in link_resp.json()["item"]["draft_ids"]
+
+    # 404 for missing draft
+    resp_404 = client.post(
+        f"/api/v1/brand-studio/campaigns/{campaign_id}/drafts/draft-missing",
+        headers=AUTH_HEADERS,
+    )
+    assert resp_404.status_code == 404
+
+    # 404 for missing campaign
+    resp_camp_404 = client.post(
+        f"/api/v1/brand-studio/campaigns/camp-missing/drafts/{draft_id}",
+        headers=AUTH_HEADERS,
+    )
+    assert resp_camp_404.status_code == 404

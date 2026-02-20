@@ -103,5 +103,10 @@
   "campaigns.create": "Create campaign",
   "campaigns.empty": "No campaigns yet.",
   "campaigns.run": "Run",
-  "campaigns.created": "Created"
+  "campaigns.created": "Created",
+  "monitoring.createCampaign": "Create campaign",
+  "campaigns.drafts": "Drafts",
+  "campaigns.queued": "Queued",
+  "queue.campaign": "Campaign",
+  "queue.allCampaigns": "All"
 }

@@ -241,6 +241,7 @@ async def generate_draft(
             languages=payload.languages,
             tone=payload.tone,
             actor=actor,
+            campaign_id=payload.campaign_id,
         )
     except KeyError as exc:
         if str(exc).strip("'") == "candidate_not_found":
@@ -275,6 +276,7 @@ async def queue_draft(
                 target_path=payload.target_path,
                 payload_override=payload.payload_override,
                 actor=actor,
+                campaign_id=payload.campaign_id,
             )
     except KeyError as exc:
         if str(exc).strip("'") in {"draft_not_found", "draft_variant_not_found"}:
@@ -338,8 +340,9 @@ async def list_queue(
     _feature: FeatureDep,
     service: ServiceDep,
     _actor: OptionalActorDep,
+    campaign_id: Annotated[str | None, Query()] = None,
 ) -> QueueResponse:
-    items = service.queue_items()
+    items = service.queue_items(campaign_id=campaign_id)
     return QueueResponse(count=len(items), items=items)
 
 
@@ -903,3 +906,30 @@ async def run_campaign(
                 detail="Campaign is already in a terminal state",
             ) from exc
         raise
+
+
+@router.post(
+    "/campaigns/{campaign_id}/drafts/{draft_id}",
+    response_model=BrandCampaignResponse,
+    responses={
+        404: {"description": "Campaign or draft not found"},
+    },
+)
+async def link_draft_to_campaign(
+    campaign_id: str,
+    draft_id: str,
+    _feature: FeatureDep,
+    service: ServiceDep,
+    actor: ActorDep,
+    _autonomy: AutonomyDep,
+) -> BrandCampaignResponse:
+    try:
+        item = service.campaign_link_draft(campaign_id, draft_id, actor=actor)
+    except KeyError as exc:
+        detail = (
+            "Campaign not found"
+            if str(exc).strip("'") == "campaign_not_found"
+            else "Draft not found"
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail) from exc
+    return BrandCampaignResponse(item=item)
