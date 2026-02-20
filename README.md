@@ -120,7 +120,7 @@ After changing env values, restart Venom services.
 2. `devto`: real publish connector.
 3. `reddit`: real publish connector (OAuth refresh token flow).
 4. `x`: manual publish marker in MVP.
-5. `linkedin`, `medium`, `hf_blog`, `hf_spaces`, `hashnode`: account + test/status available, publish connector planned.
+5. `linkedin`, `medium`, `hf_blog`, `hf_spaces`, `hashnode`: account + test/status + publish connector available.
 
 ## CI
 - GitHub Actions workflow: `.github/workflows/ci.yml`

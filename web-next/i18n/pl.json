@@ -68,5 +68,8 @@
   "accounts.setDefault": "Ustaw domyślne",
   "accounts.test": "Test konta",
   "accounts.delete": "Usuń konto",
-  "accounts.validationName": "Podaj nazwę konta."
+  "accounts.validationName": "Podaj nazwę konta.",
+  "config.topicKeywords": "Frazy tematyczne (jedna na linię)",
+  "config.topicKeywordsHelp": "Kandydaci są filtrowani po tych frazach w tytule, opisie i URL. Zostaw puste, aby nie filtrować tematów.",
+  "config.rssHelp": "To lista feedów RSS do monitorowania (np. blogi, newslettery). Każdy URL wpisz w osobnej linii."
 }

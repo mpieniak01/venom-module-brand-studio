@@ -94,12 +94,14 @@ type AuditResponse = {
   count: number;
   items: AuditItem[];
 };
+type LogOutcome = "success" | "warning" | "error";
 
 type StrategyConfig = {
   id: string;
   name: string;
   discovery_mode: DiscoveryMode;
   rss_urls: string[];
+  topic_keywords: string[];
   cache_ttl_seconds: number;
   min_score: number;
   limit: number;
@@ -195,6 +197,7 @@ const DEFAULT_FORM: StrategyConfig = {
   name: "",
   discovery_mode: "hybrid",
   rss_urls: [],
+  topic_keywords: [],
   cache_ttl_seconds: 1800,
   min_score: 0.3,
   limit: 30,
@@ -202,6 +205,137 @@ const DEFAULT_FORM: StrategyConfig = {
   draft_languages: ["pl", "en"],
   default_accounts: {},
 };
+
+const PL_HELP: Record<string, string> = {
+  "tabs.radar":
+    "Radar to lista kandydatów tematów. Tu filtrujesz źródła i jakość okazji do publikacji.",
+  "tabs.config":
+    "Konfiguracja steruje strategią discovery i publikacji. Zmiany wpływają na kolejne odświeżenia i drafty.",
+  "tabs.integrations":
+    "API i klucze pokazuje stan integracji oraz kont kanałowych używanych do publikacji.",
+  "stats.count": "Liczba kandydatów, które przeszły aktualne filtry.",
+  "stats.topScore": "Najwyższy wynik jakości/relewancji w aktualnej liście kandydatów.",
+  "stats.freshest": "Wiek czasowy najświeższego kandydata po filtrach.",
+  "filters.language": "Filtr języka kandydata (PL/EN/other).",
+  "filters.channel": "Filtr źródła/kanału, z którego pochodzi kandydat.",
+  "filters.minScore": "Minimalny próg score dla listy kandydatów.",
+  "drafts.title":
+    "Drafty: generowanie wariantów treści na podstawie wybranego kandydata i kanałów.",
+  "drafts.candidate": "Kandydat (temat), z którego zostaną wygenerowane drafty.",
+  "queue.title":
+    "Kolejka publikacji: wpisy gotowe lub oczekujące na publikację do kanałów.",
+  "queue.account": "Konto docelowe kanału, którego użyje publikacja.",
+  "audit.title":
+    "Audyt: historia operacji modułu (generowanie draftów, testy integracji, publikacje).",
+  "config.editStrategy": "Wybór strategii, którą teraz edytujesz.",
+  "config.activeStrategy": "Strategia aktualnie aktywna w runtime modułu.",
+  "config.strategyName": "Nazwa strategii widoczna w selectorze i operacjach.",
+  "config.discoveryMode":
+    "stub = dane przykładowe, hybrid = live z fallbackiem, live = tylko dane zewnętrzne.",
+  "config.cacheTtl": "Jak długo (sekundy) cache kandydatów jest uznawany za świeży.",
+  "config.limit": "Maksymalna liczba kandydatów zwracanych po filtrach.",
+  "config.minScore": "Domyślny próg score strategii używany przy pobieraniu kandydatów.",
+  "config.rss":
+    "Lista feedów RSS do monitorowania (jeden URL na linię), wykorzystywana w discovery.",
+  "config.topicKeywords":
+    "Frazy tematyczne używane do dodatkowego filtrowania kandydatów po tytule/opisie/URL.",
+  "config.channels": "Kanały, dla których generowane są drafty i ustawienia domyślne.",
+  "config.languages": "Języki, w których moduł ma generować warianty draftów.",
+  "config.save": "Zapisuje konfigurację aktywnej strategii.",
+  "config.updateStrategy": "Zapisuje zmiany w aktualnie edytowanej strategii.",
+  "config.newStrategy": "Tworzy nową strategię (kopiując bazę i nadpisane pola).",
+  "config.duplicate": "Tworzy kopię wybranej strategii.",
+  "config.activate": "Ustawia wybraną strategię jako aktywną.",
+  "config.delete": "Usuwa wybraną strategię (jeśli nie jest jedyną).",
+  "config.refreshNow": "Wymusza natychmiastowe odświeżenie kandydatów z backendu.",
+  "config.restore": "Pobiera konfigurację ponownie z backendu i nadpisuje formularz.",
+  "integrations.loading": "Stan integracji i kluczy API wymaganych przez kanały/źródła.",
+  "integrations.keyRequired": "Integracja wymaga prywatnego klucza/tokenu.",
+  "integrations.public": "Integracja działa na publicznym API bez klucza.",
+  "integrations.key": "Nazwa zmiennej środowiskowej z sekretem.",
+  "integrations.test": "Uruchamia test połączenia dla danej integracji.",
+  "accounts.title":
+    "Konta kanałów publikacji. Tu dodajesz konta i ustawiasz konto domyślne per kanał.",
+  "accounts.displayName": "Czytelna nazwa konta widoczna w UI.",
+  "accounts.target":
+    "Cel publikacji zależny od kanału (np. repo, publication, subreddit, profil).",
+  "accounts.add": "Dodaje nowe konto do kanału.",
+  "accounts.setDefault": "Ustawia konto jako domyślne dla kanału.",
+  "accounts.test": "Sprawdza konfigurację i dostępność konta.",
+  "accounts.delete": "Usuwa konto z kanału.",
+};
+
+function HelpBadge({ tip }: Readonly<{ tip: string | null }>) {
+  if (!tip) {
+    return null;
+  }
+  return (
+    <span
+      title={tip}
+      className="inline-flex h-6 w-6 shrink-0 cursor-help items-center justify-center rounded-full border border-zinc-500/80 bg-zinc-900/70 text-[11px] font-semibold leading-none text-zinc-200 transition hover:border-cyan-400/80 hover:text-cyan-200"
+      aria-label={tip}
+    >
+      ?
+    </span>
+  );
+}
+
+function TabIcon({ tab }: Readonly<{ tab: Tab }>) {
+  if (tab === "radar") {
+    return (
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 18a6 6 0 1 0-6-6" />
+        <path d="M12 14a2 2 0 1 0-2-2" />
+        <path d="M12 2v2" />
+      </svg>
+    );
+  }
+  if (tab === "config") {
+    return (
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+        <path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a1.5 1.5 0 1 1-2.1 2.1l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V19a1.5 1.5 0 0 1-3 0v-.1a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a1.5 1.5 0 1 1-2.1-2.1l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H5a1.5 1.5 0 0 1 0-3h.1a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a1.5 1.5 0 1 1 2.1-2.1l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V5a1.5 1.5 0 0 1 3 0v.1a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a1.5 1.5 0 1 1 2.1 2.1l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H19a1.5 1.5 0 0 1 0 3h-.1a1 1 0 0 0-.9.6Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 5h16" />
+      <path d="M4 12h16" />
+      <path d="M4 19h16" />
+      <circle cx="8" cy="5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="10" cy="19" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 export default function BrandStudioPage() {
   const [tab, setTab] = useState<Tab>("radar");
@@ -219,9 +353,19 @@ export default function BrandStudioPage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
+  const [queueChannelFilter, setQueueChannelFilter] = useState<"all" | PublishChannel>("all");
+  const [queueStatusFilter, setQueueStatusFilter] = useState<
+    "all" | QueueItem["status"]
+  >("all");
+  const [queueOutcomeFilter, setQueueOutcomeFilter] = useState<"all" | LogOutcome>("all");
   const [audit, setAudit] = useState<AuditItem[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState<
+    "all" | "queue" | "draft" | "integration" | "config" | "strategy" | "channel"
+  >("all");
+  const [auditStatusFilter, setAuditStatusFilter] = useState<"all" | string>("all");
+  const [auditOutcomeFilter, setAuditOutcomeFilter] = useState<"all" | LogOutcome>("all");
 
   const [strategies, setStrategies] = useState<StrategyConfig[]>([]);
   const [activeStrategyId, setActiveStrategyId] = useState<string>("");
@@ -267,11 +411,37 @@ export default function BrandStudioPage() {
     [lang]
   );
 
+  const help = useCallback(
+    (key: string): string | null => {
+      if (lang !== "pl") {
+        return null;
+      }
+      return PL_HELP[key] ?? null;
+    },
+    [lang]
+  );
+
   const normalizeRssUrls = useCallback((raw: string): string[] => {
     return raw
       .split("\n")
       .map((item) => item.trim())
       .filter((item) => item.length > 0);
+  }, []);
+
+  const normalizeTopicKeywords = useCallback((raw: string): string[] => {
+    return raw
+      .split("\n")
+      .map((item) => item.trim())
+      .filter((item, index, array) => item.length > 0 && array.indexOf(item) === index);
+  }, []);
+
+  const normalizeStrategy = useCallback((raw: StrategyConfig): StrategyConfig => {
+    return {
+      ...raw,
+      rss_urls: Array.isArray(raw.rss_urls) ? raw.rss_urls : [],
+      topic_keywords: Array.isArray(raw.topic_keywords) ? raw.topic_keywords : [],
+      default_accounts: raw.default_accounts ?? {},
+    };
   }, []);
 
   const loadCandidates = useCallback(async () => {
@@ -355,16 +525,17 @@ export default function BrandStudioPage() {
       const strategiesPayload = (await strategiesResp.json()) as StrategiesResponse;
       setActiveStrategyId(configPayload.active_strategy_id);
       setSelectedStrategyId(configPayload.active_strategy_id);
-      setConfigForm(configPayload.active_strategy);
-      setStrategies(strategiesPayload.items);
-      setStrategyName(configPayload.active_strategy.name);
-      setMinScore(configPayload.active_strategy.min_score);
+      const active = normalizeStrategy(configPayload.active_strategy);
+      setConfigForm(active);
+      setStrategies(strategiesPayload.items.map((item) => normalizeStrategy(item)));
+      setStrategyName(active.name);
+      setMinScore(active.min_score);
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : "unknown_error");
     } finally {
       setConfigLoading(false);
     }
-  }, []);
+  }, [normalizeStrategy]);
 
   const loadIntegrations = useCallback(async () => {
     setIntegrationLoading(true);
@@ -461,6 +632,67 @@ export default function BrandStudioPage() {
     const freshestMinutes = Math.min(...items.map((item) => item.age_minutes));
     return { count: items.length, topScore, freshest: `${freshestMinutes}m` };
   }, [items]);
+
+  const queueOutcome = useCallback((status: QueueItem["status"]): LogOutcome => {
+    if (status === "failed") {
+      return "error";
+    }
+    if (status === "published") {
+      return "success";
+    }
+    return "warning";
+  }, []);
+
+  const auditOutcome = useCallback((status: string): LogOutcome => {
+    const normalized = status.toLowerCase();
+    if (normalized === "failed") {
+      return "error";
+    }
+    if (normalized === "ok" || normalized === "published") {
+      return "success";
+    }
+    return "warning";
+  }, []);
+
+  const outcomeClass = useCallback((outcome: LogOutcome): string => {
+    if (outcome === "error") {
+      return "border-rose-500/40 bg-rose-500/10 text-rose-200";
+    }
+    if (outcome === "success") {
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+    }
+    return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+  }, []);
+
+  const filteredQueue = useMemo(() => {
+    return queue.filter((item) => {
+      if (queueChannelFilter !== "all" && item.target_channel !== queueChannelFilter) {
+        return false;
+      }
+      if (queueStatusFilter !== "all" && item.status !== queueStatusFilter) {
+        return false;
+      }
+      if (queueOutcomeFilter !== "all" && queueOutcome(item.status) !== queueOutcomeFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [queue, queueChannelFilter, queueOutcome, queueOutcomeFilter, queueStatusFilter]);
+
+  const filteredAudit = useMemo(() => {
+    return audit.filter((entry) => {
+      if (auditCategoryFilter !== "all" && !entry.action.startsWith(`${auditCategoryFilter}.`)) {
+        return false;
+      }
+      if (auditStatusFilter !== "all" && entry.status !== auditStatusFilter) {
+        return false;
+      }
+      if (auditOutcomeFilter !== "all" && auditOutcome(entry.status) !== auditOutcomeFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [audit, auditCategoryFilter, auditOutcome, auditOutcomeFilter, auditStatusFilter]);
 
   const generateDraft = useCallback(async () => {
     if (!selectedCandidateId) {
@@ -572,6 +804,7 @@ export default function BrandStudioPage() {
       const payload = {
         discovery_mode: configForm.discovery_mode,
         rss_urls: configForm.rss_urls,
+        topic_keywords: configForm.topic_keywords,
         cache_ttl_seconds: configForm.cache_ttl_seconds,
         min_score: configForm.min_score,
         limit: configForm.limit,
@@ -617,6 +850,7 @@ export default function BrandStudioPage() {
           name: strategyName,
           discovery_mode: configForm.discovery_mode,
           rss_urls: configForm.rss_urls,
+          topic_keywords: configForm.topic_keywords,
           cache_ttl_seconds: configForm.cache_ttl_seconds,
           min_score: configForm.min_score,
           limit: configForm.limit,
@@ -992,13 +1226,15 @@ export default function BrandStudioPage() {
             key={value}
             type="button"
             onClick={() => setTab(value)}
-            className={`rounded-t-xl rounded-b-none px-4 py-3 text-sm font-medium transition ${
+            className={`inline-flex items-center gap-2 rounded-t-xl rounded-b-none px-4 py-3 text-sm font-medium transition ${
               tab === value
                 ? "border-b-2 border-emerald-400 bg-emerald-500/10 text-emerald-300"
                 : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
             }`}
           >
+            <TabIcon tab={value} />
             {t(`tabs.${value}`)}
+            <HelpBadge tip={help(`tabs.${value}`)} />
           </button>
         ))}
       </section>
@@ -1007,15 +1243,24 @@ export default function BrandStudioPage() {
         <>
           <section className="grid gap-3 md:grid-cols-4">
             <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4">
-              <p className="text-xs uppercase text-zinc-400">{t("stats.count")}</p>
+              <p className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("stats.count")}
+                <HelpBadge tip={help("stats.count")} />
+              </p>
               <p className="text-2xl font-semibold text-white">{stats.count}</p>
             </div>
             <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4">
-              <p className="text-xs uppercase text-zinc-400">{t("stats.topScore")}</p>
+              <p className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("stats.topScore")}
+                <HelpBadge tip={help("stats.topScore")} />
+              </p>
               <p className="text-2xl font-semibold text-white">{stats.topScore.toFixed(2)}</p>
             </div>
             <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4">
-              <p className="text-xs uppercase text-zinc-400">{t("stats.freshest")}</p>
+              <p className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("stats.freshest")}
+                <HelpBadge tip={help("stats.freshest")} />
+              </p>
               <p className="text-2xl font-semibold text-white">{stats.freshest}</p>
             </div>
             <div className="flex items-end">
@@ -1032,7 +1277,10 @@ export default function BrandStudioPage() {
           <section className="glass-panel space-y-4 rounded-2xl border border-cyan-500/20 p-4">
             <div className="grid gap-3 md:grid-cols-3">
               <label className="space-y-1">
-                <span className="text-xs uppercase text-zinc-400">{t("filters.language")}</span>
+                <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                  {t("filters.language")}
+                  <HelpBadge tip={help("filters.language")} />
+                </span>
                 <select
                   value={apiLang}
                   onChange={(event) => setApiLang(event.target.value as "all" | ApiLang)}
@@ -1045,7 +1293,10 @@ export default function BrandStudioPage() {
                 </select>
               </label>
               <label className="space-y-1">
-                <span className="text-xs uppercase text-zinc-400">{t("filters.channel")}</span>
+                <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                  {t("filters.channel")}
+                  <HelpBadge tip={help("filters.channel")} />
+                </span>
                 <select
                   value={channel}
                   onChange={(event) => setChannel(event.target.value as Channel)}
@@ -1060,8 +1311,9 @@ export default function BrandStudioPage() {
                 </select>
               </label>
               <label className="space-y-1">
-                <span className="text-xs uppercase text-zinc-400">
+                <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
                   {t("filters.minScore")}: {minScore.toFixed(2)}
+                  <HelpBadge tip={help("filters.minScore")} />
                 </span>
                 <input
                   type="range"
@@ -1115,34 +1367,42 @@ export default function BrandStudioPage() {
             ) : null}
           </section>
 
-          <section className="grid gap-4 lg:grid-cols-3">
+          <section className="space-y-4">
             <div className="glass-panel space-y-3 rounded-2xl border border-emerald-500/20 p-4">
-              <h2 className="text-lg font-medium text-emerald-100">{t("drafts.title")}</h2>
-              <label className="space-y-1">
-                <span className="text-xs uppercase text-zinc-400">{t("drafts.candidate")}</span>
-                <select
-                  value={selectedCandidateId}
-                  onChange={(event) => setSelectedCandidateId(event.target.value)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+              <h2 className="inline-flex items-center gap-2 text-lg font-medium text-emerald-100">
+                {t("drafts.title")}
+                <HelpBadge tip={help("drafts.title")} />
+              </h2>
+              <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+                <label className="space-y-1">
+                  <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                    {t("drafts.candidate")}
+                    <HelpBadge tip={help("drafts.candidate")} />
+                  </span>
+                  <select
+                    value={selectedCandidateId}
+                    onChange={(event) => setSelectedCandidateId(event.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  >
+                    {items.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.topic}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void generateDraft()}
+                  disabled={draftLoading || !selectedCandidateId}
+                  className="rounded-xl border border-emerald-500/30 px-4 py-2 text-sm text-emerald-100 transition hover:border-emerald-400 disabled:opacity-50"
                 >
-                  {items.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.topic}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={() => void generateDraft()}
-                disabled={draftLoading || !selectedCandidateId}
-                className="rounded-xl border border-emerald-500/30 px-4 py-2 text-sm text-emerald-100 transition hover:border-emerald-400 disabled:opacity-50"
-              >
-                {draftLoading ? t("drafts.generating") : t("drafts.generate")}
-              </button>
+                  {draftLoading ? t("drafts.generating") : t("drafts.generate")}
+                </button>
+              </div>
               {draftError ? <p className="text-rose-300">{draftError}</p> : null}
               {draft ? (
-                <div className="space-y-2">
+                <div className="max-h-[340px] space-y-2 overflow-y-auto pr-1">
                   {draft.variants.map((variant, index) => (
                     <article key={`${variant.channel}-${variant.language}-${index}`} className="rounded-lg border border-zinc-800 p-3">
                       <p className="text-xs uppercase text-zinc-400">
@@ -1150,7 +1410,10 @@ export default function BrandStudioPage() {
                       </p>
                       {accountsByChannel[variant.channel]?.length ? (
                         <label className="mt-2 block space-y-1">
-                          <span className="text-[11px] uppercase text-zinc-500">{t("queue.account")}</span>
+                          <span className="inline-flex items-center gap-1 text-[11px] uppercase text-zinc-500">
+                            {t("queue.account")}
+                            <HelpBadge tip={help("queue.account")} />
+                          </span>
                           <select
                             value={
                               selectedAccountByChannel[variant.channel] ??
@@ -1188,51 +1451,216 @@ export default function BrandStudioPage() {
               ) : null}
             </div>
 
-            <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
-              <h2 className="text-lg font-medium text-violet-100">{t("queue.title")}</h2>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
+              <h2 className="inline-flex items-center gap-2 text-lg font-medium text-violet-100">
+                {t("queue.title")}
+                <HelpBadge tip={help("queue.title")} />
+              </h2>
               {queueLoading ? <p className="text-zinc-400">{t("queue.loading")}</p> : null}
               {queueError ? <p className="text-rose-300">{queueError}</p> : null}
               {!queueLoading && !queue.length ? <p className="text-zinc-400">{t("queue.empty")}</p> : null}
-              <div className="space-y-2">
-                {queue.map((item) => (
-                  <article key={item.item_id} className="rounded-lg border border-zinc-800 p-3">
-                    <p className="text-xs uppercase text-zinc-400">
-                      {item.target_channel} / {item.status}
-                    </p>
-                    {item.account_display_name ? (
-                      <p className="text-xs text-zinc-400">
-                        {t("queue.account")}: {item.account_display_name}
-                      </p>
-                    ) : null}
-                    <p className="text-xs text-zinc-500">{item.item_id}</p>
-                    <button
-                      type="button"
-                      onClick={() => void publishNow(item.item_id)}
-                      disabled={item.status === "published" || queueLoading}
-                      className="mt-2 rounded-lg border border-violet-500/30 px-3 py-1 text-xs text-violet-100 hover:border-violet-400 disabled:opacity-50"
-                    >
-                      {item.status === "published" ? t("queue.published") : t("queue.publishNow")}
-                    </button>
+              <div className="grid gap-2 md:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Filtr kanału" : "Channel filter"}
+                  </span>
+                  <select
+                    value={queueChannelFilter}
+                    onChange={(event) =>
+                      setQueueChannelFilter(event.target.value as "all" | PublishChannel)
+                    }
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="all">{lang === "pl" ? "Wszystkie kanały" : "All channels"}</option>
+                    {CHANNELS.map((channelId) => (
+                      <option key={channelId} value={channelId}>
+                        {channelId}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Filtr statusu" : "Status filter"}
+                  </span>
+                  <select
+                    value={queueStatusFilter}
+                    onChange={(event) =>
+                      setQueueStatusFilter(event.target.value as "all" | QueueItem["status"])
+                    }
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="all">{lang === "pl" ? "Wszystkie statusy" : "All statuses"}</option>
+                    <option value="queued">queued</option>
+                    <option value="published">published</option>
+                    <option value="failed">failed</option>
+                    <option value="draft">draft</option>
+                    <option value="ready">ready</option>
+                    <option value="cancelled">cancelled</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Wynik" : "Outcome"}
+                  </span>
+                  <select
+                    value={queueOutcomeFilter}
+                    onChange={(event) =>
+                      setQueueOutcomeFilter(event.target.value as "all" | LogOutcome)
+                    }
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="all">{lang === "pl" ? "Wszystkie" : "All"}</option>
+                    <option value="success">{lang === "pl" ? "Sukces" : "Success"}</option>
+                    <option value="warning">{lang === "pl" ? "Warning" : "Warning"}</option>
+                    <option value="error">{lang === "pl" ? "Błąd" : "Error"}</option>
+                  </select>
+                </label>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Dane ładowane przy wejściu na ekran i po akcjach (generowanie/kolejkowanie/publikacja).
+              </p>
+              <div
+                className="space-y-2 pr-2"
+                style={{
+                  maxHeight: "690px",
+                  overflowY: "scroll",
+                  scrollbarGutter: "stable",
+                  overscrollBehavior: "contain",
+                }}
+              >
+                {filteredQueue.map((item) => (
+                  <article key={item.item_id} className="min-h-[44px] rounded-lg border border-zinc-800 p-3">
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span
+                        className={`rounded border px-2 py-1 uppercase ${outcomeClass(
+                          queueOutcome(item.status)
+                        )}`}
+                      >
+                        {item.target_channel} / {item.status}
+                      </span>
+                      {item.account_display_name ? (
+                        <span className="text-zinc-400">
+                          {t("queue.account")}: {item.account_display_name}
+                        </span>
+                      ) : null}
+                      <span className="text-zinc-500">{item.item_id}</span>
+                      <button
+                        type="button"
+                        onClick={() => void publishNow(item.item_id)}
+                        disabled={item.status === "published" || queueLoading}
+                        className="rounded-lg border border-violet-500/30 px-3 py-1 text-xs text-violet-100 hover:border-violet-400 disabled:opacity-50"
+                      >
+                        {item.status === "published" ? t("queue.published") : t("queue.publishNow")}
+                      </button>
+                    </div>
                   </article>
                 ))}
               </div>
-            </div>
+              </div>
 
-            <div className="glass-panel space-y-3 rounded-2xl border border-cyan-500/20 p-4">
-              <h2 className="text-lg font-medium text-cyan-100">{t("audit.title")}</h2>
+              <div className="glass-panel space-y-3 rounded-2xl border border-cyan-500/20 p-4">
+              <h2 className="inline-flex items-center gap-2 text-lg font-medium text-cyan-100">
+                {t("audit.title")}
+                <HelpBadge tip={help("audit.title")} />
+              </h2>
               {auditLoading ? <p className="text-zinc-400">{t("audit.loading")}</p> : null}
               {auditError ? <p className="text-rose-300">{auditError}</p> : null}
               {!auditLoading && !audit.length ? <p className="text-zinc-400">{t("audit.empty")}</p> : null}
-              <div className="space-y-2">
-                {audit.slice(0, 8).map((entry) => (
-                  <article key={entry.id} className="rounded-lg border border-zinc-800 p-3">
-                    <p className="text-xs uppercase text-zinc-400">
-                      {entry.action} / {entry.status}
-                    </p>
-                    <p className="text-xs text-zinc-500">{entry.actor}</p>
-                    <p className="text-xs text-zinc-500">{new Date(entry.timestamp).toLocaleString()}</p>
+              <div className="grid gap-2 md:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Filtr API/akcji" : "API/action filter"}
+                  </span>
+                  <select
+                    value={auditCategoryFilter}
+                    onChange={(event) =>
+                      setAuditCategoryFilter(
+                        event.target.value as
+                          | "all"
+                          | "queue"
+                          | "draft"
+                          | "integration"
+                          | "config"
+                          | "strategy"
+                          | "channel"
+                      )
+                    }
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="all">{lang === "pl" ? "Wszystkie akcje" : "All actions"}</option>
+                    <option value="queue">queue.*</option>
+                    <option value="draft">draft.*</option>
+                    <option value="integration">integration.*</option>
+                    <option value="config">config.*</option>
+                    <option value="strategy">strategy.*</option>
+                    <option value="channel">channel.*</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Filtr statusu" : "Status filter"}
+                  </span>
+                  <select
+                    value={auditStatusFilter}
+                    onChange={(event) => setAuditStatusFilter(event.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="all">{lang === "pl" ? "Wszystkie statusy" : "All statuses"}</option>
+                    <option value="ok">ok</option>
+                    <option value="queued">queued</option>
+                    <option value="published">published</option>
+                    <option value="failed">failed</option>
+                    <option value="manual">manual</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Wynik" : "Outcome"}
+                  </span>
+                  <select
+                    value={auditOutcomeFilter}
+                    onChange={(event) =>
+                      setAuditOutcomeFilter(event.target.value as "all" | LogOutcome)
+                    }
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                  >
+                    <option value="all">{lang === "pl" ? "Wszystkie" : "All"}</option>
+                    <option value="success">{lang === "pl" ? "Sukces" : "Success"}</option>
+                    <option value="warning">{lang === "pl" ? "Warning" : "Warning"}</option>
+                    <option value="error">{lang === "pl" ? "Błąd" : "Error"}</option>
+                  </select>
+                </label>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Brak auto-pollingu co kilka sekund. Odświeżenie następuje po wejściu i po operacjach użytkownika.
+              </p>
+              <div
+                className="space-y-2 pr-2"
+                style={{
+                  maxHeight: "690px",
+                  overflowY: "scroll",
+                  scrollbarGutter: "stable",
+                  overscrollBehavior: "contain",
+                }}
+              >
+                {filteredAudit.map((entry) => (
+                  <article key={entry.id} className="min-h-[44px] rounded-lg border border-zinc-800 p-3">
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span
+                        className={`rounded border px-2 py-1 uppercase ${outcomeClass(
+                          auditOutcome(entry.status)
+                        )}`}
+                      >
+                        {entry.action} / {entry.status}
+                      </span>
+                      <span className="text-zinc-500">{entry.actor}</span>
+                      <span className="text-zinc-500">{new Date(entry.timestamp).toLocaleString()}</span>
+                    </div>
                   </article>
                 ))}
+              </div>
               </div>
             </div>
           </section>
@@ -1243,7 +1671,10 @@ export default function BrandStudioPage() {
         <section className="glass-panel space-y-4 rounded-2xl border border-emerald-500/20 p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.editStrategy")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.editStrategy")}
+                <HelpBadge tip={help("config.editStrategy")} />
+              </span>
               <select
                 value={selectedStrategyId}
                 onChange={(event) => {
@@ -1252,9 +1683,10 @@ export default function BrandStudioPage() {
                   if (!found) {
                     return;
                   }
+                  const normalized = normalizeStrategy(found);
                   setSelectedStrategyId(selectedId);
-                  setConfigForm(found);
-                  setStrategyName(found.name);
+                  setConfigForm(normalized);
+                  setStrategyName(normalized.name);
                 }}
                 className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
               >
@@ -1266,13 +1698,19 @@ export default function BrandStudioPage() {
               </select>
             </label>
             <div className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.activeStrategy")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.activeStrategy")}
+                <HelpBadge tip={help("config.activeStrategy")} />
+              </span>
               <p className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100">
                 {strategies.find((item) => item.id === activeStrategyId)?.name ?? "-"}
               </p>
             </div>
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.strategyName")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.strategyName")}
+                <HelpBadge tip={help("config.strategyName")} />
+              </span>
               <input
                 value={strategyName}
                 onChange={(event) => setStrategyName(event.target.value)}
@@ -1283,7 +1721,10 @@ export default function BrandStudioPage() {
 
           <div className="grid gap-3 md:grid-cols-3">
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.discoveryMode")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.discoveryMode")}
+                <HelpBadge tip={help("config.discoveryMode")} />
+              </span>
               <select
                 value={configForm.discovery_mode}
                 onChange={(event) =>
@@ -1300,7 +1741,10 @@ export default function BrandStudioPage() {
               </select>
             </label>
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.cacheTtl")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.cacheTtl")}
+                <HelpBadge tip={help("config.cacheTtl")} />
+              </span>
               <input
                 type="number"
                 min={30}
@@ -1315,7 +1759,10 @@ export default function BrandStudioPage() {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.limit")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.limit")}
+                <HelpBadge tip={help("config.limit")} />
+              </span>
               <input
                 type="number"
                 min={1}
@@ -1331,7 +1778,10 @@ export default function BrandStudioPage() {
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.minScore")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.minScore")}
+                <HelpBadge tip={help("config.minScore")} />
+              </span>
               <input
                 type="number"
                 min={0}
@@ -1345,7 +1795,10 @@ export default function BrandStudioPage() {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs uppercase text-zinc-400">{t("config.rss")}</span>
+              <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.rss")}
+                <HelpBadge tip={help("config.rss")} />
+              </span>
               <textarea
                 value={configForm.rss_urls.join("\n")}
                 onChange={(event) =>
@@ -1357,12 +1810,35 @@ export default function BrandStudioPage() {
                 rows={4}
                 className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
               />
+              <p className="text-xs text-zinc-500">{t("config.rssHelp")}</p>
             </label>
           </div>
 
+          <label className="space-y-1">
+            <span className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+              {t("config.topicKeywords")}
+              <HelpBadge tip={help("config.topicKeywords")} />
+            </span>
+            <textarea
+              value={configForm.topic_keywords.join("\n")}
+              onChange={(event) =>
+                setConfigForm((previous) => ({
+                  ...previous,
+                  topic_keywords: normalizeTopicKeywords(event.target.value),
+                }))
+              }
+              rows={3}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+            />
+            <p className="text-xs text-zinc-500">{t("config.topicKeywordsHelp")}</p>
+          </label>
+
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-2">
-              <p className="text-xs uppercase text-zinc-400">{t("config.channels")}</p>
+              <p className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.channels")}
+                <HelpBadge tip={help("config.channels")} />
+              </p>
               <div className="flex flex-wrap gap-2">
                 {CHANNELS.map((value) => (
                   <button
@@ -1381,7 +1857,10 @@ export default function BrandStudioPage() {
               </div>
             </div>
             <div className="space-y-2">
-              <p className="text-xs uppercase text-zinc-400">{t("config.languages")}</p>
+              <p className="inline-flex items-center gap-1 text-xs uppercase text-zinc-400">
+                {t("config.languages")}
+                <HelpBadge tip={help("config.languages")} />
+              </p>
               <div className="flex flex-wrap gap-2">
                 {(["pl", "en"] as const).map((value) => (
                   <button
@@ -1420,7 +1899,10 @@ export default function BrandStudioPage() {
                   : undefined
               }
             >
-              {t("config.save")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.save")}
+                <HelpBadge tip={help("config.save")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1428,7 +1910,10 @@ export default function BrandStudioPage() {
               disabled={configLoading || !configForm.id}
               className="rounded-xl border border-cyan-500/40 px-4 py-2 text-sm text-cyan-100 disabled:opacity-50"
             >
-              {t("config.updateStrategy")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.updateStrategy")}
+                <HelpBadge tip={help("config.updateStrategy")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1436,7 +1921,10 @@ export default function BrandStudioPage() {
               disabled={configLoading || !strategyName.trim()}
               className="rounded-xl border border-violet-500/40 px-4 py-2 text-sm text-violet-100 disabled:opacity-50"
             >
-              {t("config.newStrategy")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.newStrategy")}
+                <HelpBadge tip={help("config.newStrategy")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1449,7 +1937,10 @@ export default function BrandStudioPage() {
               disabled={configLoading || !configForm.id}
               className="rounded-xl border border-zinc-600 px-4 py-2 text-sm text-zinc-100 disabled:opacity-50"
             >
-              {t("config.duplicate")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.duplicate")}
+                <HelpBadge tip={help("config.duplicate")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1457,7 +1948,10 @@ export default function BrandStudioPage() {
               disabled={configLoading || !configForm.id}
               className="rounded-xl border border-amber-500/40 px-4 py-2 text-sm text-amber-100 disabled:opacity-50"
             >
-              {t("config.activate")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.activate")}
+                <HelpBadge tip={help("config.activate")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1474,7 +1968,10 @@ export default function BrandStudioPage() {
               disabled={configLoading || !configForm.id}
               className="rounded-xl border border-rose-500/40 px-4 py-2 text-sm text-rose-100 disabled:opacity-50"
             >
-              {t("config.delete")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.delete")}
+                <HelpBadge tip={help("config.delete")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1482,7 +1979,10 @@ export default function BrandStudioPage() {
               disabled={configLoading}
               className="rounded-xl border border-cyan-500/30 px-4 py-2 text-sm text-cyan-100 disabled:opacity-50"
             >
-              {t("config.refreshNow")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.refreshNow")}
+                <HelpBadge tip={help("config.refreshNow")} />
+              </span>
             </button>
             <button
               type="button"
@@ -1490,66 +1990,91 @@ export default function BrandStudioPage() {
               disabled={configLoading}
               className="rounded-xl border border-zinc-700 px-4 py-2 text-sm text-zinc-100 disabled:opacity-50"
             >
-              {t("config.restore")}
+              <span className="inline-flex items-center gap-1">
+                {t("config.restore")}
+                <HelpBadge tip={help("config.restore")} />
+              </span>
             </button>
           </div>
         </section>
       ) : null}
 
       {tab === "integrations" ? (
-        <section className="glass-panel space-y-4 rounded-2xl border border-violet-500/20 p-4">
-          {integrationLoading ? <p className="text-zinc-400">{t("integrations.loading")}</p> : null}
-          {integrationError ? <p className="text-rose-300">{integrationError}</p> : null}
-          {!integrationLoading && !integrations.length ? (
-            <p className="text-zinc-400">{t("integrations.empty")}</p>
-          ) : null}
-          <div className="space-y-3">
-            {integrations.map((item) => (
-              <article key={item.id} className="rounded-xl border border-zinc-800 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-base font-medium text-zinc-100">{item.name}</h3>
-                  <span className="rounded bg-zinc-800 px-2 py-1 text-xs uppercase text-zinc-200">
-                    {item.status}
-                  </span>
-                  <span className="rounded bg-zinc-800 px-2 py-1 text-xs uppercase text-zinc-400">
-                    {item.requires_key ? t("integrations.keyRequired") : t("integrations.public")}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm text-zinc-300">{item.details}</p>
-                {item.key_hint ? (
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {t("integrations.key")}: {item.key_hint}
-                  </p>
-                ) : null}
-                {item.masked_secret ? (
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {t("integrations.masked")} {item.masked_secret}
-                  </p>
-                ) : null}
-                {item.configured_target ? (
-                  <p className="mt-1 text-xs text-zinc-500">target: {item.configured_target}</p>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => void runIntegrationTest(item.id)}
-                  disabled={integrationLoading}
-                  className="mt-3 rounded-lg border border-violet-500/40 px-3 py-1 text-xs text-violet-100 disabled:opacity-50"
-                >
-                  {t("integrations.test")}
-                </button>
-                {integrationTests[item.id] ? (
-                  <p className="mt-2 text-xs text-cyan-200">{integrationTests[item.id]}</p>
-                ) : null}
-              </article>
-            ))}
+        <section className="grid gap-4 lg:grid-cols-2">
+          <div className="glass-panel space-y-4 rounded-2xl border border-violet-500/20 p-4">
+            <h3 className="inline-flex items-center gap-2 text-base font-medium text-zinc-100">
+              {t("tabs.integrations")}
+              <HelpBadge tip={help("tabs.integrations")} />
+            </h3>
+            {integrationLoading ? <p className="text-zinc-400">{t("integrations.loading")}</p> : null}
+            {integrationError ? <p className="text-rose-300">{integrationError}</p> : null}
+            {!integrationLoading && !integrations.length ? (
+              <p className="text-zinc-400">{t("integrations.empty")}</p>
+            ) : null}
+            <div className="max-h-[920px] space-y-3 overflow-y-auto pr-1">
+              {integrations.map((item) => (
+                <article key={item.id} className="rounded-xl border border-zinc-800 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-base font-medium text-zinc-100">{item.name}</h3>
+                    <span className="rounded bg-zinc-800 px-2 py-1 text-xs uppercase text-zinc-200">
+                      {item.status}
+                    </span>
+                    <span className="rounded bg-zinc-800 px-2 py-1 text-xs uppercase text-zinc-400">
+                      {item.requires_key ? t("integrations.keyRequired") : t("integrations.public")}
+                    </span>
+                    <HelpBadge
+                      tip={help(
+                        item.requires_key ? "integrations.keyRequired" : "integrations.public"
+                      )}
+                    />
+                  </div>
+                  <p className="mt-2 text-sm text-zinc-300">{item.details}</p>
+                  {item.key_hint ? (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {t("integrations.key")}: {item.key_hint}
+                      <span className="ml-1 align-middle">
+                        <HelpBadge tip={help("integrations.key")} />
+                      </span>
+                    </p>
+                  ) : null}
+                  {item.masked_secret ? (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {t("integrations.masked")} {item.masked_secret}
+                    </p>
+                  ) : null}
+                  {item.configured_target ? (
+                    <p className="mt-1 text-xs text-zinc-500">target: {item.configured_target}</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void runIntegrationTest(item.id)}
+                    disabled={integrationLoading}
+                    className="mt-3 rounded-lg border border-violet-500/40 px-3 py-1 text-xs text-violet-100 disabled:opacity-50"
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      {t("integrations.test")}
+                      <HelpBadge tip={help("integrations.test")} />
+                    </span>
+                  </button>
+                  {integrationTests[item.id] ? (
+                    <p className="mt-2 text-xs text-cyan-200">{integrationTests[item.id]}</p>
+                  ) : null}
+                </article>
+              ))}
+            </div>
           </div>
-          <div className="space-y-3 pt-2">
-            <h3 className="text-base font-medium text-zinc-100">{t("accounts.title")}</h3>
+
+          <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
+            <h3 className="inline-flex items-center gap-2 text-base font-medium text-zinc-100">
+              {t("accounts.title")}
+              <HelpBadge tip={help("accounts.title")} />
+            </h3>
             {!channelDescriptors.length ? (
               <p className="text-sm text-zinc-400">{t("accounts.empty")}</p>
             ) : null}
-            {channelDescriptors.map((descriptor) => (
-              <article key={descriptor.id} className="rounded-xl border border-zinc-800 p-4">
+            <div className="max-h-[920px] space-y-3 overflow-y-auto pr-1">
+              {channelDescriptors.map((descriptor) => (
+                <article key={descriptor.id} className="rounded-xl border border-zinc-800 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-sm font-medium uppercase text-zinc-200">{descriptor.id}</h4>
                   <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
@@ -1585,8 +2110,21 @@ export default function BrandStudioPage() {
                     disabled={integrationLoading}
                     className="rounded-lg border border-emerald-500/40 px-3 py-2 text-xs text-emerald-100 disabled:opacity-50"
                   >
-                    {t("accounts.add")}
+                    <span className="inline-flex items-center gap-1">
+                      {t("accounts.add")}
+                      <HelpBadge tip={help("accounts.add")} />
+                    </span>
                   </button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-zinc-500">
+                  <span className="inline-flex items-center gap-1">
+                    {t("accounts.displayName")}
+                    <HelpBadge tip={help("accounts.displayName")} />
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    {t("accounts.target")}
+                    <HelpBadge tip={help("accounts.target")} />
+                  </span>
                 </div>
                 <div className="mt-3 space-y-2">
                   {(accountsByChannel[descriptor.id] ?? []).map((account) => (
@@ -1628,7 +2166,10 @@ export default function BrandStudioPage() {
                           disabled={integrationLoading}
                           className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
                         >
-                          {t("accounts.setDefault")}
+                          <span className="inline-flex items-center gap-1">
+                            {t("accounts.setDefault")}
+                            <HelpBadge tip={help("accounts.setDefault")} />
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -1636,7 +2177,10 @@ export default function BrandStudioPage() {
                           disabled={integrationLoading}
                           className="rounded-lg border border-violet-500/40 px-2 py-1 text-[11px] text-violet-100 disabled:opacity-50"
                         >
-                          {t("accounts.test")}
+                          <span className="inline-flex items-center gap-1">
+                            {t("accounts.test")}
+                            <HelpBadge tip={help("accounts.test")} />
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -1644,7 +2188,10 @@ export default function BrandStudioPage() {
                           disabled={integrationLoading}
                           className="rounded-lg border border-rose-500/40 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
                         >
-                          {t("accounts.delete")}
+                          <span className="inline-flex items-center gap-1">
+                            {t("accounts.delete")}
+                            <HelpBadge tip={help("accounts.delete")} />
+                          </span>
                         </button>
                       </div>
                       {integrationTests[`${descriptor.id}:${account.account_id}`] ? (
@@ -1655,8 +2202,9 @@ export default function BrandStudioPage() {
                     </div>
                   ))}
                 </div>
-              </article>
-            ))}
+                </article>
+              ))}
+            </div>
           </div>
         </section>
       ) : null}

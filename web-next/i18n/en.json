@@ -68,5 +68,8 @@
   "accounts.setDefault": "Set default",
   "accounts.test": "Test account",
   "accounts.delete": "Delete account",
-  "accounts.validationName": "Provide account name."
+  "accounts.validationName": "Provide account name.",
+  "config.topicKeywords": "Topic keywords (one per line)",
+  "config.topicKeywordsHelp": "Candidates are filtered by these phrases in title, summary and URL. Leave empty to disable topic filtering.",
+  "config.rssHelp": "List RSS feeds to monitor (blogs/newsletters). Put one feed URL per line."
 }

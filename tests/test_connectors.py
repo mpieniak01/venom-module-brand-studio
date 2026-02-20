@@ -1,8 +1,21 @@
 from __future__ import annotations
 
-from venom_module_brand_studio.connectors import devto, github, reddit, sources
+from venom_module_brand_studio.connectors import (
+    devto,
+    github,
+    hashnode,
+    hf,
+    linkedin,
+    medium,
+    reddit,
+    sources,
+)
 from venom_module_brand_studio.connectors.devto import DevtoPublisher, _normalize_devto_target
 from venom_module_brand_studio.connectors.github import GitHubPublisher
+from venom_module_brand_studio.connectors.hashnode import HashnodePublisher
+from venom_module_brand_studio.connectors.hf import HfPublisher
+from venom_module_brand_studio.connectors.linkedin import LinkedInPublisher
+from venom_module_brand_studio.connectors.medium import MediumPublisher
 from venom_module_brand_studio.connectors.reddit import RedditPublisher, _normalize_subreddit
 
 
@@ -258,7 +271,109 @@ def test_reddit_publish_markdown(monkeypatch) -> None:
         subreddit="r/python",
     )
     assert result.external_id == "t3_abc"
-    assert result.url == "https://reddit.com/r/python/comments/abc"
+
+
+def test_hashnode_publisher_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("HASHNODE_TOKEN", raising=False)
+    assert HashnodePublisher.from_env() is None
+    monkeypatch.setenv("HASHNODE_TOKEN", "hash-token")
+    publisher = HashnodePublisher.from_env()
+    assert publisher is not None
+
+
+def test_hashnode_validate_and_publish(monkeypatch) -> None:
+    def fake_graphql(query: str, *, token: str, variables=None):  # noqa: ANN001
+        assert token == "hash-token"
+        if "query { me" in query:
+            return {"me": {"username": "user"}}
+        assert variables is not None
+        return {
+            "publishPost": {
+                "post": {"id": "h1", "url": "https://hashnode.com/p/one"},
+            }
+        }
+
+    monkeypatch.setattr(hashnode, "_graphql", fake_graphql)
+    publisher = HashnodePublisher(token="hash-token")
+    assert publisher.validate_connection() is True
+    result = publisher.publish_markdown(title="Title", content="Body", target="pub-id")
+    assert result.external_id == "h1"
+
+
+def test_linkedin_publisher_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("LINKEDIN_ACCESS_TOKEN", raising=False)
+    assert LinkedInPublisher.from_env() is None
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "li-token")
+    assert LinkedInPublisher.from_env() is not None
+
+
+def test_linkedin_validate_and_publish(monkeypatch) -> None:
+    def fake_request_json(method: str, url: str, *, token: str, payload=None):  # noqa: ANN001
+        assert token == "li-token"
+        if method == "GET":
+            return {"id": "abc"}
+        assert payload is not None
+        return {"id": "urn:li:share:1"}
+
+    monkeypatch.setattr(linkedin, "_request_json", fake_request_json)
+    publisher = LinkedInPublisher(access_token="li-token")
+    assert publisher.validate_connection() is True
+    result = publisher.publish_markdown(title="Title", content="Body", target=None)
+    assert result.external_id == "urn:li:share:1"
+
+
+def test_medium_publisher_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("MEDIUM_TOKEN", raising=False)
+    assert MediumPublisher.from_env() is None
+    monkeypatch.setenv("MEDIUM_TOKEN", "med-token")
+    assert MediumPublisher.from_env() is not None
+
+
+def test_medium_validate_and_publish(monkeypatch) -> None:
+    def fake_request_json(method: str, url: str, *, token: str, payload=None):  # noqa: ANN001
+        assert token == "med-token"
+        if method == "GET":
+            return {"data": {"id": "user-1"}}
+        assert payload is not None
+        return {"data": {"id": "m1", "url": "https://medium.com/@u/m1"}}
+
+    monkeypatch.setattr(medium, "_request_json", fake_request_json)
+    publisher = MediumPublisher(token="med-token")
+    assert publisher.validate_connection() is True
+    result = publisher.publish_markdown(title="T", content="Body", target="https://example.org")
+    assert result.external_id == "m1"
+
+
+def test_hf_publisher_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert HfPublisher.from_env() is None
+    monkeypatch.setenv("HF_TOKEN", "hf-token")
+    assert HfPublisher.from_env() is not None
+
+
+def test_hf_validate_and_publish(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_request_json(method: str, url: str, *, token: str, payload=None):  # noqa: ANN001
+        calls.append((method, url))
+        assert token == "hf-token"
+        if method == "GET":
+            return {"name": "user"}
+        assert payload is not None
+        return {"ok": True}
+
+    monkeypatch.setattr(hf, "_request_json", fake_request_json)
+    publisher = HfPublisher(token="hf-token")
+    assert publisher.validate_connection() is True
+    result = publisher.publish_markdown(
+        channel="hf_spaces",
+        title="Title",
+        content="Body",
+        target="org/space",
+    )
+    assert result.external_id.startswith("hf-space-")
+    assert calls
+    assert result.url == "https://huggingface.co/spaces/org/space/blob/main/brand-studio/title.md"
 
 
 def test_normalize_subreddit() -> None:

@@ -89,6 +89,8 @@ class DraftBundle(BaseModel):
 class QueueDraftRequest(BaseModel):
     target_channel: BrandChannel
     account_id: str | None = None
+    target: str | None = None
+    # Deprecated compatibility field (use `target`).
     target_repo: str | None = None
     target_path: str | None = None
     target_language: DraftLanguage | None = None
@@ -119,6 +121,8 @@ class PublishQueueItem(BaseModel):
     draft_id: str
     target_channel: BrandChannel
     target_language: DraftLanguage | None = None
+    target: str | None = None
+    # Deprecated compatibility field (use `target`).
     target_repo: str | None = None
     target_path: str | None = None
     account_id: str | None = None
@@ -154,6 +158,7 @@ class StrategyConfig(BaseModel):
     name: str = Field(min_length=1)
     discovery_mode: DiscoveryMode
     rss_urls: list[str] = Field(default_factory=list)
+    topic_keywords: list[str] = Field(default_factory=list)
     cache_ttl_seconds: int = Field(ge=30, le=86400)
     min_score: float = Field(ge=0.0, le=1.0)
     limit: int = Field(ge=1, le=200)
@@ -170,6 +175,7 @@ class ConfigResponse(BaseModel):
 class ConfigUpdateRequest(BaseModel):
     discovery_mode: DiscoveryMode | None = None
     rss_urls: list[str] | None = None
+    topic_keywords: list[str] | None = None
     cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
     min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     limit: int | None = Field(default=None, ge=1, le=200)
@@ -192,6 +198,7 @@ class StrategiesResponse(BaseModel):
 class StrategyFieldsBase(BaseModel):
     discovery_mode: DiscoveryMode | None = None
     rss_urls: list[str] | None = None
+    topic_keywords: list[str] | None = None
     cache_ttl_seconds: int | None = Field(default=None, ge=30, le=86400)
     min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     limit: int | None = Field(default=None, ge=1, le=200)

@@ -241,6 +241,7 @@ async def queue_draft(
                 target_channel=payload.target_channel,
                 account_id=payload.account_id,
                 target_language=payload.target_language,
+                target=payload.target,
                 target_repo=payload.target_repo,
                 target_path=payload.target_path,
                 payload_override=payload.payload_override,

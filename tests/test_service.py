@@ -73,6 +73,7 @@ def test_queue_and_publish_with_github_connector(monkeypatch) -> None:
         draft_id=draft.draft_id,
         target_channel="github",
         target_language="pl",
+        target=None,
         target_repo="owner/repo",
         target_path="content/test.md",
         payload_override=None,
@@ -235,6 +236,7 @@ def test_queue_and_audit_state_survive_service_restart(monkeypatch, tmp_path: Pa
         draft_id=draft.draft_id,
         target_channel="x",
         target_language="pl",
+        target=None,
         target_repo=None,
         target_path=None,
         payload_override=None,
@@ -402,6 +404,7 @@ def test_channel_accounts_lifecycle_and_queue_binding(monkeypatch, tmp_path: Pat
         target_channel="devto",
         account_id=created.account_id,
         target_language="pl",
+        target=None,
         target_repo=None,
         target_path=None,
         payload_override=None,
@@ -439,6 +442,7 @@ def test_queue_draft_raises_for_unknown_explicit_account_id(
             target_channel="devto",
             account_id="missing-account",
             target_language="pl",
+            target=None,
             target_repo=None,
             target_path=None,
             payload_override=None,
@@ -473,6 +477,7 @@ def test_publish_devto_channel_with_connector(monkeypatch, tmp_path: Path) -> No
         draft_id=draft.draft_id,
         target_channel="devto",
         target_language="en",
+        target=None,
         target_repo=None,
         target_path=None,
         payload_override=None,
@@ -542,6 +547,7 @@ def test_publish_reddit_channel_with_connector(monkeypatch, tmp_path: Path) -> N
         draft_id=draft.draft_id,
         target_channel="reddit",
         target_language="en",
+        target=None,
         target_repo=None,
         target_path=None,
         payload_override=None,
@@ -578,7 +584,7 @@ def test_publish_reddit_channel_with_connector(monkeypatch, tmp_path: Path) -> N
     assert refreshed.failed_publishes == 0
 
 
-def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) -> None:
+def test_publish_fails_for_unconfigured_hashnode_channel(monkeypatch, tmp_path: Path) -> None:
     state_file = tmp_path / "runtime-state.json"
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
@@ -609,6 +615,7 @@ def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) 
         draft_id=draft.draft_id,
         target_channel="hashnode",
         target_language="en",
+        target=None,
         target_repo=None,
         target_path=None,
         payload_override=None,
@@ -622,4 +629,91 @@ def test_publish_fails_for_not_implemented_channel(monkeypatch, tmp_path: Path) 
     )
     assert result.success is False
     assert result.status == "failed"
-    assert "not implemented yet" in result.message
+    assert "not configured" in result.message
+
+
+@pytest.mark.parametrize(
+    ("channel", "env_name", "env_value", "target"),
+    [
+        ("hashnode", "HASHNODE_TOKEN", "hash-token", "publication-1"),
+        ("linkedin", "LINKEDIN_ACCESS_TOKEN", "li-token", "urn:li:person:abc"),
+        ("medium", "MEDIUM_TOKEN", "med-token", "https://example.org/canonical"),
+        ("hf_spaces", "HF_TOKEN", "hf-token", "org/my-space"),
+        ("hf_blog", "HF_TOKEN", "hf-token", "org/my-blog"),
+    ],
+)
+def test_publish_additional_channels_with_connectors(
+    monkeypatch,
+    tmp_path: Path,
+    channel: str,
+    env_name: str,
+    env_value: str,
+    target: str,
+) -> None:
+    state_file = tmp_path / "runtime-state.json"
+    cache_file = tmp_path / "candidates-cache.json"
+    accounts_file = tmp_path / "accounts-state.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv(env_name, env_value)
+
+    service = BrandStudioService()
+    account = service.create_channel_account(
+        channel,  # type: ignore[arg-type]
+        ChannelAccountCreateRequest(
+            display_name=f"{channel}-account",
+            target=target,
+            is_default=True,
+        ),
+        actor="tester",
+    )
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=[channel],
+        languages=["en"],
+        tone="expert",
+        actor="tester",
+    )
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel=channel,
+        target_language="en",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=account.account_id,
+    )
+
+    class FakePublisher:
+        def validate_connection(self):  # noqa: ANN201
+            return True
+
+        def publish_markdown(self, **_kwargs):  # noqa: ANN003, ANN201
+            class Result:
+                external_id = "ext-1"
+                url = "https://example.org/post/1"
+                message = "Published"
+
+            return Result()
+
+    if channel == "hashnode":
+        service._hashnode_publisher = FakePublisher()  # type: ignore[attr-defined]
+    elif channel == "linkedin":
+        service._linkedin_publisher = FakePublisher()  # type: ignore[attr-defined]
+    elif channel == "medium":
+        service._medium_publisher = FakePublisher()  # type: ignore[attr-defined]
+    else:
+        service._hf_publisher = FakePublisher()  # type: ignore[attr-defined]
+
+    result = service.publish_queue_item(
+        item_id=queue_item.item_id,
+        confirm_publish=True,
+        actor="tester",
+    )
+    assert result.success is True
+    assert result.status == "published"

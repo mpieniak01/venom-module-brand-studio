@@ -68,5 +68,8 @@
   "accounts.setDefault": "Als Standard setzen",
   "accounts.test": "Konto testen",
   "accounts.delete": "Konto löschen",
-  "accounts.validationName": "Kontonamen angeben."
+  "accounts.validationName": "Kontonamen angeben.",
+  "config.topicKeywords": "Themen-Phrasen (eine pro Zeile)",
+  "config.topicKeywordsHelp": "Kandidaten werden nach diesen Phrasen in Titel, Zusammenfassung und URL gefiltert. Leer lassen, um den Themenfilter auszuschalten.",
+  "config.rssHelp": "Liste der zu überwachenden RSS-Feeds (Blogs/Newsletter). Eine Feed-URL pro Zeile."
 }
