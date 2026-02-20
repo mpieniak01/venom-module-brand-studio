@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+_SAFE_QUERY_RE = re.compile(r"[^\w\s\-.,'\"]", re.UNICODE)
+_MAX_QUERY_LENGTH = 256
 
 
 class GoogleCSEConnector:
@@ -23,9 +27,18 @@ class GoogleCSEConnector:
             return None
         return cls(api_key=api_key, cx=cx)
 
+    @staticmethod
+    def _sanitize_query(query: str) -> str:
+        """Sanitize the search query to prevent malicious payloads."""
+        sanitized = _SAFE_QUERY_RE.sub(" ", query).strip()
+        return sanitized[:_MAX_QUERY_LENGTH]
+
     def search(self, query: str, *, num: int = 10) -> list[dict[str, object]]:
         num = max(1, min(10, num))
-        params = urlencode({"key": self._api_key, "cx": self._cx, "q": query, "num": num})
+        safe_query = self._sanitize_query(query)
+        if not safe_query:
+            return []
+        params = urlencode({"key": self._api_key, "cx": self._cx, "q": safe_query, "num": num})
         url = f"{self.BASE_URL}?{params}"
         with urlopen(url, timeout=15) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))

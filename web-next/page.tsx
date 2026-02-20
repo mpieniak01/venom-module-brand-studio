@@ -239,6 +239,17 @@ type BrandCampaign = {
 };
 
 const CHANNELS: PublishChannel[] = [
+  "x",
+  "github",
+  "blog",
+  "linkedin",
+  "medium",
+  "hf_blog",
+  "hf_spaces",
+  "reddit",
+  "devto",
+  "hashnode",
+];
 
 const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
@@ -2648,8 +2659,8 @@ export default function BrandStudioPage() {
                 onChange={(e) => setNewKeywordType(e.target.value as KeywordType)}
                 className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
               >
-                {(["brand_core", "brand_product", "brand_person", "risk_term", "competitor_context"] as const).map((t_) => (
-                  <option key={t_} value={t_}>{t_}</option>
+                {(["brand_core", "brand_product", "brand_person", "risk_term", "competitor_context"] as const).map((kwType) => (
+                  <option key={kwType} value={kwType}>{kwType}</option>
                 ))}
               </select>
               <button

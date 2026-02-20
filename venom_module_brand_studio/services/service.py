@@ -291,6 +291,31 @@ def _masked_secret(secret: str | None) -> str | None:
     return f"{'*' * (len(value) - 4)}{value[-4:]}"
 
 
+_POSITIVE_SNIPPET_KEYWORDS: tuple[str, ...] = (
+    "official",
+    "my blog",
+    "my project",
+    "własny",
+)
+_RISK_SNIPPET_KEYWORDS: tuple[str, ...] = (
+    "scam",
+    "fraud",
+    "fake",
+    "spam",
+    "ripoff",
+)
+_NEUTRAL_SNIPPET_KEYWORDS: tuple[str, ...] = (
+    "review",
+    "mention",
+    "about",
+    "profile",
+)
+
+# Retention limits for in-memory monitoring storage
+_MAX_SCAN_RESULTS_RETAINED = 500
+_MAX_SCANS_RETAINED = 100
+
+
 class BrandStudioService:
     def __init__(self) -> None:
         self._candidates: list[ContentCandidate] = []
@@ -2271,11 +2296,11 @@ class BrandStudioService:
             if result_domain == src_domain or url.startswith(src.base_url):
                 return "owned_source", True, src.source_id
         snippet_lower = snippet.lower()
-        if any(kw in snippet_lower for kw in ("official", "my blog", "my project", "własny")):
+        if any(kw in snippet_lower for kw in _POSITIVE_SNIPPET_KEYWORDS):
             return "brand_mention_positive", False, None
-        if any(kw in snippet_lower for kw in ("scam", "fraud", "fake", "spam", "ripoff")):
+        if any(kw in snippet_lower for kw in _RISK_SNIPPET_KEYWORDS):
             return "brand_mention_risk", False, None
-        if any(kw in snippet_lower for kw in ("review", "mention", "about", "profile")):
+        if any(kw in snippet_lower for kw in _NEUTRAL_SNIPPET_KEYWORDS):
             return "brand_mention_neutral", False, None
         return "unrelated", False, None
 
@@ -2507,9 +2532,10 @@ class BrandStudioService:
                     src.model_dump(mode="json") for src in self._base_sources.values()
                 ],
                 "scan_results": [
-                    r.model_dump(mode="json") for r in self._scan_results[-500:]
+                    r.model_dump(mode="json")
+                    for r in self._scan_results[-_MAX_SCAN_RESULTS_RETAINED:]
                 ],
-                "scans": [s.model_dump(mode="json") for s in self._scans[-100:]],
+                "scans": [s.model_dump(mode="json") for s in self._scans[-_MAX_SCANS_RETAINED:]],
                 "campaigns": [c.model_dump(mode="json") for c in self._campaigns.values()],
                 "monitoring_request_ids": list(self._monitoring_request_ids),
                 "campaign_run_request_ids": list(self._campaign_run_request_ids),
