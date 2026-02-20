@@ -257,6 +257,16 @@ const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
 const MAX_CAMPAIGN_NAME_LENGTH = 60;
 
+/** Extract a human-readable error message from a non-ok fetch Response. */
+async function extractErrorMessage(resp: Response): Promise<string> {
+  try {
+    const body = (await resp.json()) as { detail?: string };
+    return body.detail ?? `HTTP ${resp.status}`;
+  } catch {
+    return `HTTP ${resp.status}`;
+  }
+}
+
 const DEFAULT_FORM: StrategyConfig = {
   id: "",
   name: "",
@@ -488,14 +498,17 @@ export default function BrandStudioPage() {
 
   const [monitoringSummary, setMonitoringSummary] = useState<BrandMonitoringSummary | null>(null);
   const [monitoringResults, setMonitoringResults] = useState<BrandSearchResult[]>([]);
+  const [monitoringResultsVisible, setMonitoringResultsVisible] = useState(20);
   const [monitoringLoading, setMonitoringLoading] = useState(false);
   const [monitoringError, setMonitoringError] = useState<string | null>(null);
   const [keywords, setKeywords] = useState<BrandKeyword[]>([]);
   const [keywordsLoading, setKeywordsLoading] = useState(false);
+  const [keywordsError, setKeywordsError] = useState<string | null>(null);
   const [newKeywordPhrase, setNewKeywordPhrase] = useState("");
   const [newKeywordType, setNewKeywordType] = useState<KeywordType>("brand_core");
   const [baseSources, setBaseSources] = useState<BrandBaseSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
   const [newSourceName, setNewSourceName] = useState("");
   const [newSourceUrl, setNewSourceUrl] = useState("");
   const [newSourceChannel, setNewSourceChannel] = useState<PublishChannel>("blog");
@@ -1368,17 +1381,21 @@ export default function BrandStudioPage() {
     const phrase = newKeywordPhrase.trim();
     if (!phrase) return;
     setKeywordsLoading(true);
+    setKeywordsError(null);
     try {
       const resp = await fetch("/api/v1/brand-studio/monitoring/keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
         body: JSON.stringify({ phrase, keyword_type: newKeywordType }),
       });
-      if (resp.ok) {
-        setNewKeywordPhrase("");
-        await loadKeywords();
-        await loadAudit();
+      if (!resp.ok) {
+        throw new Error(await extractErrorMessage(resp));
       }
+      setNewKeywordPhrase("");
+      await loadKeywords();
+      await loadAudit();
+    } catch (err) {
+      setKeywordsError(err instanceof Error ? err.message : "unknown_error");
     } finally {
       setKeywordsLoading(false);
     }
@@ -1425,18 +1442,22 @@ export default function BrandStudioPage() {
     const url = newSourceUrl.trim();
     if (!name || !url) return;
     setSourcesLoading(true);
+    setSourcesError(null);
     try {
       const resp = await fetch("/api/v1/brand-studio/monitoring/sources", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
         body: JSON.stringify({ name, base_url: url, channel: newSourceChannel }),
       });
-      if (resp.ok) {
-        setNewSourceName("");
-        setNewSourceUrl("");
-        await loadBaseSources();
-        await loadAudit();
+      if (!resp.ok) {
+        throw new Error(await extractErrorMessage(resp));
       }
+      setNewSourceName("");
+      setNewSourceUrl("");
+      await loadBaseSources();
+      await loadAudit();
+    } catch (err) {
+      setSourcesError(err instanceof Error ? err.message : "unknown_error");
     } finally {
       setSourcesLoading(false);
     }
@@ -1506,11 +1527,17 @@ export default function BrandStudioPage() {
     setCampaignsLoading(true);
     setCampaignsError(null);
     try {
+      const baseName = resultTitle.trim() || "Campaign from monitoring";
+      let name = baseName;
+      if (baseName.length > MAX_CAMPAIGN_NAME_LENGTH) {
+        const ellipsis = "...";
+        name = baseName.slice(0, MAX_CAMPAIGN_NAME_LENGTH - ellipsis.length) + ellipsis;
+      }
       const resp = await fetch("/api/v1/brand-studio/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Authenticated-User": "local-user" },
         body: JSON.stringify({
-          name: resultTitle.slice(0, MAX_CAMPAIGN_NAME_LENGTH) || "Campaign from monitoring",
+          name,
           channels: ["x"],
           linked_result_ids: [resultId],
         }),
@@ -2590,7 +2617,7 @@ export default function BrandStudioPage() {
               <p className="text-zinc-400 text-sm">{t("monitoring.noResults")}</p>
             ) : (
               <div className="space-y-2">
-                {monitoringResults.slice(0, 20).map((result) => (
+                {monitoringResults.slice(0, monitoringResultsVisible).map((result) => (
                   <div key={result.result_id} className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3 text-sm">
                     <div className="flex flex-wrap gap-2 mb-1 text-xs">
                       <span className={`rounded px-2 py-0.5 ${result.maps_to_base_source ? "bg-emerald-900/40 text-emerald-200" : result.classification === "brand_mention_risk" ? "bg-rose-900/40 text-rose-200" : "bg-zinc-800 text-zinc-300"}`}>
@@ -2611,6 +2638,15 @@ export default function BrandStudioPage() {
                     </button>
                   </div>
                 ))}
+                {monitoringResults.length > monitoringResultsVisible ? (
+                  <button
+                    type="button"
+                    onClick={() => setMonitoringResultsVisible((n) => n + 20)}
+                    className="w-full rounded-xl border border-zinc-700 py-2 text-sm text-zinc-400 hover:text-zinc-200"
+                  >
+                    {t("monitoring.loadMore")} ({monitoringResults.length - monitoringResultsVisible} {t("monitoring.remaining")})
+                  </button>
+                ) : null}
               </div>
             )}
           </div>
@@ -2621,6 +2657,7 @@ export default function BrandStudioPage() {
         <section className="space-y-6">
           <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-4">
             <h2 className="text-lg font-semibold text-white">{t("sources.title")}</h2>
+            {sourcesError ? <p className="text-rose-300 text-sm">{sourcesError}</p> : null}
             <div className="grid gap-3 md:grid-cols-4">
               <input
                 value={newSourceName}
@@ -2682,6 +2719,7 @@ export default function BrandStudioPage() {
         <section className="space-y-6">
           <div className="glass-panel rounded-2xl border border-cyan-500/20 p-4 space-y-4">
             <h2 className="text-lg font-semibold text-white">{t("keywords.title")}</h2>
+            {keywordsError ? <p className="text-rose-300 text-sm">{keywordsError}</p> : null}
             <div className="grid gap-3 md:grid-cols-3">
               <input
                 value={newKeywordPhrase}

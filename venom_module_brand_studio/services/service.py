@@ -345,7 +345,7 @@ class BrandStudioService:
         self._scan_results: list[BrandSearchResult] = []
         self._scans: list[BrandMonitoringScan] = []
         self._campaigns: dict[str, BrandCampaign] = {}
-        self._monitoring_request_ids: set[str] = set()
+        self._monitoring_request_id_to_scan: dict[str, str] = {}
         self._campaign_run_request_ids: set[str] = set()
         self._google_cse = GoogleCSEConnector.from_env()
         self._init_default_strategy()
@@ -2298,20 +2298,34 @@ class BrandStudioService:
     # ---- Monitoring scan ----
 
     def _classify_result(
-        self, url: str, snippet: str
+        self, url: str, snippet: str, base_sources: dict[str, BrandBaseSource]
     ) -> tuple[SearchResultClass, bool, str | None]:
-        """Classify a search result relative to known base sources."""
+        """Classify a search result relative to known base sources.
+
+        Args:
+            url: The result URL to classify.
+            snippet: The result snippet text.
+            base_sources: Snapshot of known brand base sources for ownership matching.
+
+        Note: only 'www.' is stripped when comparing domains; other subdomains
+        (mobile, amp, etc.) are not normalised. Register separate base sources
+        for those variants if needed.
+        """
         result_domain = urlsplit(url).netloc.lower().lstrip("www.")
-        for src in self._base_sources.values():
+        for src in base_sources.values():
             src_domain = urlsplit(src.base_url).netloc.lower().lstrip("www.")
             if result_domain == src_domain or url.startswith(src.base_url):
                 return "owned_source", True, src.source_id
         snippet_lower = snippet.lower()
-        if any(kw in snippet_lower for kw in _POSITIVE_SNIPPET_KEYWORDS):
-            return "brand_mention_positive", False, None
-        if any(kw in snippet_lower for kw in _RISK_SNIPPET_KEYWORDS):
+        has_positive = any(kw in snippet_lower for kw in _POSITIVE_SNIPPET_KEYWORDS)
+        has_risk = any(kw in snippet_lower for kw in _RISK_SNIPPET_KEYWORDS)
+        has_neutral = any(kw in snippet_lower for kw in _NEUTRAL_SNIPPET_KEYWORDS)
+        # Apply explicit priority when multiple categories match: risk > positive > neutral.
+        if has_risk:
             return "brand_mention_risk", False, None
-        if any(kw in snippet_lower for kw in _NEUTRAL_SNIPPET_KEYWORDS):
+        if has_positive:
+            return "brand_mention_positive", False, None
+        if has_neutral:
             return "brand_mention_neutral", False, None
         return "unrelated", False, None
 
@@ -2334,61 +2348,72 @@ class BrandStudioService:
     def monitoring_scan(
         self, payload: BrandMonitoringScanRequest, *, actor: str
     ) -> BrandMonitoringScanResponse:
+        # ---- Phase 1: read state under lock, check idempotency ----
         with self._lock:
-            if payload.request_id and payload.request_id in self._monitoring_request_ids:
-                if self._scans:
-                    last_scan = self._scans[-1]
-                    results = [r for r in self._scan_results if r.scan_id == last_scan.scan_id]
-                    return BrandMonitoringScanResponse(scan=last_scan, results=results)
+            if payload.request_id and payload.request_id in self._monitoring_request_id_to_scan:
+                cached_scan_id = self._monitoring_request_id_to_scan[payload.request_id]
+                cached_scan = next(
+                    (s for s in self._scans if s.scan_id == cached_scan_id), None
+                )
+                if cached_scan:
+                    results = [
+                        r for r in self._scan_results if r.scan_id == cached_scan_id
+                    ]
+                    return BrandMonitoringScanResponse(scan=cached_scan, results=results)
 
-            keywords_to_scan: list[BrandKeyword]
             if payload.keyword_ids:
                 keywords_to_scan = [
-                    kw for kw in self._keywords.values() if kw.keyword_id in payload.keyword_ids
+                    kw
+                    for kw in self._keywords.values()
+                    if kw.keyword_id in payload.keyword_ids
                 ]
             else:
                 keywords_to_scan = [kw for kw in self._keywords.values() if kw.active]
 
-            scan_id = f"scan-{uuid4().hex[:8]}"
-            now = _utcnow()
-            all_results: list[BrandSearchResult] = []
-            scan_status: Literal["completed", "partial", "failed"] = "completed"
-            scan_message: str | None = None
+            # Snapshot mutable state needed for classification
+            base_sources_snapshot = dict(self._base_sources)
+            google_cse = self._google_cse
 
-            for kw in keywords_to_scan:
-                try:
-                    if self._google_cse is not None:
-                        raw_results = self._google_cse.search(kw.phrase)
-                    else:
-                        raw_results = self._stub_search_results(kw)
-                    for raw in raw_results:
-                        classification, maps_to_src, src_id = self._classify_result(
-                            str(raw["url"]), str(raw["snippet"])
-                        )
-                        result = BrandSearchResult(
-                            result_id=f"res-{uuid4().hex[:8]}",
-                            scan_id=scan_id,
-                            keyword_id=kw.keyword_id,
-                            url=str(raw["url"]),
-                            title=str(raw["title"]),
-                            snippet=str(raw["snippet"]),
-                            position=int(raw["position"]),
-                            scanned_at=now,
-                            classification=classification,
-                            maps_to_base_source=maps_to_src,
-                            base_source_id=src_id,
-                        )
-                        all_results.append(result)
-                except Exception as exc:
-                    scan_status = "partial"
-                    scan_message = f"Partial failure: {exc}"
-                    self._add_audit(
-                        actor=actor,
-                        action="monitoring.scan",
-                        status="partial",
-                        payload=f"{scan_id}:kw={kw.keyword_id}:{exc}",
+        # ---- Phase 2: external API calls outside the lock ----
+        scan_id = f"scan-{uuid4().hex[:8]}"
+        now = _utcnow()
+        all_results: list[BrandSearchResult] = []
+        scan_status: Literal["completed", "partial", "failed"] = "completed"
+        scan_message: str | None = None
+        failed_keyword_ids: list[str] = []
+
+        for kw in keywords_to_scan:
+            try:
+                if google_cse is not None:
+                    raw_results = google_cse.search(kw.phrase)
+                else:
+                    raw_results = self._stub_search_results(kw)
+                for raw in raw_results:
+                    classification, maps_to_src, src_id = self._classify_result(
+                        str(raw["url"]), str(raw["snippet"]), base_sources_snapshot
                     )
+                    result = BrandSearchResult(
+                        result_id=f"res-{uuid4().hex[:8]}",
+                        scan_id=scan_id,
+                        keyword_id=kw.keyword_id,
+                        url=str(raw["url"]),
+                        title=str(raw["title"]),
+                        snippet=str(raw["snippet"]),
+                        position=int(raw["position"]),
+                        scanned_at=now,
+                        classification=classification,
+                        maps_to_base_source=maps_to_src,
+                        base_source_id=src_id,
+                    )
+                    all_results.append(result)
+            except (RuntimeError, OSError, ValueError) as exc:
+                scan_status = "partial"
+                if scan_message is None:
+                    scan_message = f"Partial failure on keyword {kw.keyword_id}: {exc}"
+                failed_keyword_ids.append(kw.keyword_id)
 
+        # ---- Phase 3: update state under lock ----
+        with self._lock:
             scan = BrandMonitoringScan(
                 scan_id=scan_id,
                 keywords_scanned=[kw.keyword_id for kw in keywords_to_scan],
@@ -2400,14 +2425,23 @@ class BrandStudioService:
             self._scans.append(scan)
             self._scan_results.extend(all_results)
             if payload.request_id:
-                self._monitoring_request_ids.add(payload.request_id)
+                self._monitoring_request_id_to_scan[payload.request_id] = scan_id
             self._persist_monitoring_state()
             self._add_audit(
                 actor=actor,
                 action="monitoring.scan",
                 status="ok",
-                payload=f"{scan_id}:keywords={len(keywords_to_scan)}:results={len(all_results)}",
+                payload=(
+                    f"{scan_id}:keywords={len(keywords_to_scan)}:results={len(all_results)}"
+                ),
             )
+            for kw_id in failed_keyword_ids:
+                self._add_audit(
+                    actor=actor,
+                    action="monitoring.scan",
+                    status="partial",
+                    payload=f"{scan_id}:kw={kw_id}:failed",
+                )
             return BrandMonitoringScanResponse(scan=scan, results=all_results)
 
     def monitoring_results(self, *, scan_id: str | None = None) -> list[BrandSearchResult]:
@@ -2514,6 +2548,7 @@ class BrandStudioService:
             now = _utcnow()
             created_draft_ids: list[str] = []
             created_queue_ids: list[str] = []
+            failed_queue_count = 0
 
             if item.linked_result_ids:
                 strategy = self._active_strategy()
@@ -2525,10 +2560,6 @@ class BrandStudioService:
                     if result is None:
                         continue
                     virtual_id = f"cand-campaign-{uuid4().hex[:8]}"
-                    from venom_module_brand_studio.api.schemas import (  # noqa: PLC0415
-                        ContentCandidate,
-                        OpportunityScoreBreakdown,
-                    )
                     breakdown = OpportunityScoreBreakdown(
                         relevance=0.5,
                         timeliness=0.5,
@@ -2573,7 +2604,8 @@ class BrandStudioService:
                                 campaign_id=campaign_id,
                             )
                             created_queue_ids.append(queue_item.item_id)
-                        except Exception as exc:  # noqa: BLE001
+                        except (ValueError, KeyError, RuntimeError) as exc:
+                            failed_queue_count += 1
                             logger.warning(
                                 "campaign_run: failed to queue draft %s for channel %s: %s",
                                 draft.draft_id,
@@ -2600,10 +2632,13 @@ class BrandStudioService:
                 status="ok",
                 payload=f"{campaign_id}:drafts={len(created_draft_ids)}:queued={len(created_queue_ids)}",
             )
-            msg = (
+            parts = [
                 f"Campaign started. Created {len(created_draft_ids)} draft(s), "
                 f"{len(created_queue_ids)} queue item(s)."
-            )
+            ]
+            if failed_queue_count:
+                parts.append(f" {failed_queue_count} queue operation(s) failed (see audit).")
+            msg = "".join(parts)
             return BrandCampaignRunResponse(
                 campaign_id=campaign_id,
                 status="running",
@@ -2662,7 +2697,7 @@ class BrandStudioService:
                 ],
                 "scans": [s.model_dump(mode="json") for s in self._scans[-_MAX_SCANS_RETAINED:]],
                 "campaigns": [c.model_dump(mode="json") for c in self._campaigns.values()],
-                "monitoring_request_ids": list(self._monitoring_request_ids),
+                "monitoring_request_ids": self._monitoring_request_id_to_scan,
                 "campaign_run_request_ids": list(self._campaign_run_request_ids),
             }
             monitoring_file.write_text(
@@ -2712,8 +2747,16 @@ class BrandStudioService:
                         self._campaigns[camp.campaign_id] = camp
 
             req_ids = payload.get("monitoring_request_ids")
-            if isinstance(req_ids, list):
-                self._monitoring_request_ids = set(req_ids)
+            if isinstance(req_ids, dict):
+                # New format: dict mapping request_id → scan_id
+                self._monitoring_request_id_to_scan = {
+                    str(k): str(v) for k, v in req_ids.items()
+                }
+            elif isinstance(req_ids, list):
+                # Legacy format: just a list of request_ids (no scan_id mapping available)
+                self._monitoring_request_id_to_scan = {
+                    rid: "" for rid in req_ids if isinstance(rid, str)
+                }
 
             run_ids = payload.get("campaign_run_request_ids")
             if isinstance(run_ids, list):

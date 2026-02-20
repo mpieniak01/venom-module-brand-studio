@@ -550,6 +550,9 @@ def test_monitoring_disabled_returns_403(monkeypatch) -> None:
     client = build_client()
     resp = client.get("/api/v1/brand-studio/monitoring/keywords")
     assert resp.status_code == 403
+    # Campaigns also require monitoring to be enabled
+    resp = client.get("/api/v1/brand-studio/campaigns")
+    assert resp.status_code == 403
 
 
 def test_campaigns_crud_and_run() -> None:

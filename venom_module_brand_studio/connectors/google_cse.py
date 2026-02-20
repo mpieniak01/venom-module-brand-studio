@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
 _SAFE_QUERY_RE = re.compile(r"[^\w\s\-.,'\"]", re.UNICODE)
 _MAX_QUERY_LENGTH = 256
+_DEFAULT_TIMEOUT_SECONDS = 15
 
 
 class GoogleCSEConnector:
@@ -28,6 +30,17 @@ class GoogleCSEConnector:
         return cls(api_key=api_key, cx=cx)
 
     @staticmethod
+    def _get_timeout() -> int:
+        """Return configured request timeout in seconds (BRAND_STUDIO_GOOGLE_CSE_TIMEOUT)."""
+        raw = (os.getenv("BRAND_STUDIO_GOOGLE_CSE_TIMEOUT") or "").strip()
+        if raw:
+            try:
+                return max(1, int(raw))
+            except ValueError:
+                pass
+        return _DEFAULT_TIMEOUT_SECONDS
+
+    @staticmethod
     def _sanitize_query(query: str) -> str:
         """Sanitize the search query to prevent malicious payloads."""
         sanitized = _SAFE_QUERY_RE.sub(" ", query).strip()
@@ -40,8 +53,15 @@ class GoogleCSEConnector:
             return []
         params = urlencode({"key": self._api_key, "cx": self._cx, "q": safe_query, "num": num})
         url = f"{self.BASE_URL}?{params}"
-        with urlopen(url, timeout=15) as response:  # noqa: S310
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(url, timeout=self._get_timeout()) as response:  # noqa: S310
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RuntimeError(
+                f"Google CSE API returned HTTP {exc.code}: {exc.reason}"
+            ) from exc
+        except URLError as exc:
+            raise RuntimeError(f"Google CSE request failed: {exc.reason}") from exc
         items: list[dict[str, object]] = []
         for i, item in enumerate(payload.get("items") or [], start=1):
             items.append(

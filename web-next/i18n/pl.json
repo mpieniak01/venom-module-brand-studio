@@ -105,6 +105,8 @@
   "campaigns.run": "Uruchom",
   "campaigns.created": "Utworzono",
   "monitoring.createCampaign": "Utwórz kampanię",
+  "monitoring.loadMore": "Pokaż więcej",
+  "monitoring.remaining": "pozostałe",
   "campaigns.drafts": "Drafty",
   "campaigns.queued": "W kolejce",
   "queue.campaign": "Kampania",

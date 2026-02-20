@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from urllib.error import HTTPError, URLError
+
 from venom_module_brand_studio.connectors import (
     devto,
     github,
@@ -12,6 +15,10 @@ from venom_module_brand_studio.connectors import (
 )
 from venom_module_brand_studio.connectors.devto import DevtoPublisher, _normalize_devto_target
 from venom_module_brand_studio.connectors.github import GitHubPublisher
+from venom_module_brand_studio.connectors.google_cse import (
+    _DEFAULT_TIMEOUT_SECONDS,
+    GoogleCSEConnector,
+)
 from venom_module_brand_studio.connectors.hashnode import HashnodePublisher
 from venom_module_brand_studio.connectors.hf import HfPublisher
 from venom_module_brand_studio.connectors.linkedin import LinkedInPublisher
@@ -380,3 +387,128 @@ def test_normalize_subreddit() -> None:
     assert _normalize_subreddit("r/Python") == "python"
     assert _normalize_subreddit("python_ai") == "python_ai"
     assert _normalize_subreddit("https://reddit.com/r/python") is None
+
+
+# ---- GoogleCSEConnector ----
+
+
+def test_google_cse_from_env_missing(monkeypatch) -> None:
+    monkeypatch.delenv("BRAND_STUDIO_GOOGLE_CSE_API_KEY", raising=False)
+    monkeypatch.delenv("BRAND_STUDIO_GOOGLE_CSE_CX", raising=False)
+    assert GoogleCSEConnector.from_env() is None
+
+    monkeypatch.setenv("BRAND_STUDIO_GOOGLE_CSE_API_KEY", "key")
+    assert GoogleCSEConnector.from_env() is None  # CX still missing
+
+    monkeypatch.setenv("BRAND_STUDIO_GOOGLE_CSE_CX", "cx")
+    connector = GoogleCSEConnector.from_env()
+    assert connector is not None
+
+
+def test_google_cse_sanitize_query() -> None:
+    assert GoogleCSEConnector._sanitize_query("hello world") == "hello world"
+    assert GoogleCSEConnector._sanitize_query("brand's project") == "brand's project"
+    assert GoogleCSEConnector._sanitize_query("<script>alert(1)</script>") == (
+        "script alert 1   script"
+    )
+    assert GoogleCSEConnector._sanitize_query("") == ""
+    long_query = "a" * 300
+    assert len(GoogleCSEConnector._sanitize_query(long_query)) == 256
+
+
+def test_google_cse_timeout_configurable(monkeypatch) -> None:
+    monkeypatch.delenv("BRAND_STUDIO_GOOGLE_CSE_TIMEOUT", raising=False)
+    assert GoogleCSEConnector._get_timeout() == _DEFAULT_TIMEOUT_SECONDS
+
+    monkeypatch.setenv("BRAND_STUDIO_GOOGLE_CSE_TIMEOUT", "30")
+    assert GoogleCSEConnector._get_timeout() == 30
+
+    monkeypatch.setenv("BRAND_STUDIO_GOOGLE_CSE_TIMEOUT", "invalid")
+    assert GoogleCSEConnector._get_timeout() == _DEFAULT_TIMEOUT_SECONDS
+
+    monkeypatch.setenv("BRAND_STUDIO_GOOGLE_CSE_TIMEOUT", "0")
+    assert GoogleCSEConnector._get_timeout() == 1  # clamped to minimum 1
+
+
+def test_google_cse_search_empty_query() -> None:
+    connector = GoogleCSEConnector(api_key="key", cx="cx")
+    assert connector.search("   ") == []
+
+
+def test_google_cse_search_success(monkeypatch) -> None:
+    fake_payload = {
+        "items": [
+            {"link": "https://example.com", "title": "Example Site", "snippet": "An example."},
+            {"link": "https://example2.com", "title": "Example 2", "snippet": "Another."},
+        ]
+    }
+
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return json.dumps(fake_payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        "venom_module_brand_studio.connectors.google_cse.urlopen",
+        lambda url, timeout=None: _FakeResponse(),
+    )
+    connector = GoogleCSEConnector(api_key="key", cx="cx")
+    results = connector.search("brand test")
+    assert len(results) == 2
+    assert results[0]["url"] == "https://example.com"
+    assert results[0]["title"] == "Example Site"
+    assert results[0]["position"] == 1
+    assert results[1]["position"] == 2
+
+
+def test_google_cse_search_http_error(monkeypatch) -> None:
+    import pytest
+
+    def fake_urlopen(url: str, timeout: int | None = None) -> None:
+        raise HTTPError(url, 403, "Forbidden", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "venom_module_brand_studio.connectors.google_cse.urlopen", fake_urlopen
+    )
+    connector = GoogleCSEConnector(api_key="key", cx="cx")
+    with pytest.raises(RuntimeError, match="HTTP 403"):
+        connector.search("test query")
+
+
+def test_google_cse_search_url_error(monkeypatch) -> None:
+    import pytest
+
+    def fake_urlopen(url: str, timeout: int | None = None) -> None:
+        raise URLError("Network unreachable")
+
+    monkeypatch.setattr(
+        "venom_module_brand_studio.connectors.google_cse.urlopen", fake_urlopen
+    )
+    connector = GoogleCSEConnector(api_key="key", cx="cx")
+    with pytest.raises(RuntimeError, match="request failed"):
+        connector.search("test query")
+
+
+def test_google_cse_search_empty_items(monkeypatch) -> None:
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return json.dumps({"kind": "customsearch#search"}).encode("utf-8")
+
+    monkeypatch.setattr(
+        "venom_module_brand_studio.connectors.google_cse.urlopen",
+        lambda url, timeout=None: _FakeResponse(),
+    )
+    connector = GoogleCSEConnector(api_key="key", cx="cx")
+    results = connector.search("noresults query")
+    assert results == []

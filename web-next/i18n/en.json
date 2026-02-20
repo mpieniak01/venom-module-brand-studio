@@ -105,6 +105,8 @@
   "campaigns.run": "Run",
   "campaigns.created": "Created",
   "monitoring.createCampaign": "Create campaign",
+  "monitoring.loadMore": "Load more",
+  "monitoring.remaining": "remaining",
   "campaigns.drafts": "Drafts",
   "campaigns.queued": "Queued",
   "queue.campaign": "Campaign",

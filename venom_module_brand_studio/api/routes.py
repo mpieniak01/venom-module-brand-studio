@@ -816,6 +816,7 @@ async def monitoring_summary(
 @router.get("/campaigns", response_model=BrandCampaignsResponse)
 async def list_campaigns(
     _feature: FeatureDep,
+    _monitoring: MonitoringDep,
     service: ServiceDep,
     _actor: OptionalActorDep,
 ) -> BrandCampaignsResponse:
@@ -827,6 +828,7 @@ async def list_campaigns(
 async def create_campaign(
     payload: BrandCampaignCreateRequest,
     _feature: FeatureDep,
+    _monitoring: MonitoringDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
@@ -843,6 +845,7 @@ async def create_campaign(
 async def get_campaign(
     campaign_id: str,
     _feature: FeatureDep,
+    _monitoring: MonitoringDep,
     service: ServiceDep,
     _actor: OptionalActorDep,
 ) -> BrandCampaignResponse:
@@ -864,6 +867,7 @@ async def update_campaign(
     campaign_id: str,
     payload: BrandCampaignUpdateRequest,
     _feature: FeatureDep,
+    _monitoring: MonitoringDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
@@ -888,6 +892,7 @@ async def update_campaign(
 async def run_campaign(
     campaign_id: str,
     _feature: FeatureDep,
+    _monitoring: MonitoringDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
@@ -919,6 +924,7 @@ async def link_draft_to_campaign(
     campaign_id: str,
     draft_id: str,
     _feature: FeatureDep,
+    _monitoring: MonitoringDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
