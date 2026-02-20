@@ -1522,6 +1522,8 @@ export default function BrandStudioPage() {
       setCampaignsLoading(false);
     }
   }, [loadCampaigns, setTab]);
+
+  const toggleChannel = (value: PublishChannel) => {
     setConfigError(null);
     setConfigForm((previous) => {
       const exists = previous.active_channels.includes(value);

@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -717,7 +718,6 @@ def test_generate_draft_with_campaign_id_tracks_campaign() -> None:
     assert queue_resp.status_code == 200
 
     # Audit should mention campaign
-    import hashlib
     audit_resp = client.get("/api/v1/brand-studio/audit")
     assert audit_resp.status_code == 200
     actions = [e["action"] for e in audit_resp.json()["items"]]

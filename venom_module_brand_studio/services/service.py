@@ -2573,8 +2573,13 @@ class BrandStudioService:
                                 campaign_id=campaign_id,
                             )
                             created_queue_ids.append(queue_item.item_id)
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "campaign_run: failed to queue draft %s for channel %s: %s",
+                                draft.draft_id,
+                                channel,
+                                exc,
+                            )
 
             updated = item.model_copy(
                 update={
