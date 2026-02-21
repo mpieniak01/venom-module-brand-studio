@@ -26,20 +26,18 @@ from venom_module_brand_studio.api.schemas import (
     BrandMonitoringScanResponse,
     BrandMonitoringSummary,
     CandidatesResponse,
-    ChannelAccountCreateRequest,
-    ChannelAccountResponse,
-    ChannelAccountsResponse,
-    ChannelAccountTestResponse,
-    ChannelAccountUpdateRequest,
+    ChannelCredentialProfileCreateRequest,
+    ChannelCredentialProfileResponse,
+    ChannelCredentialProfilesResponse,
+    ChannelCredentialProfileTestResponse,
+    ChannelCredentialProfileUpdateRequest,
     ChannelId,
-    ChannelsResponse,
     ConfigResponse,
     ConfigUpdateRequest,
+    CredentialProfileRole,
+    CredentialProfileStatus,
     DraftBundle,
     DraftGenerateRequest,
-    IntegrationId,
-    IntegrationsResponse,
-    IntegrationTestResponse,
     PublishRequest,
     PublishResult,
     QueueCreateResponse,
@@ -54,6 +52,7 @@ from venom_module_brand_studio.api.schemas import (
 from venom_module_brand_studio.services.service import (
     BrandStudioService,
     ChannelAccountNotFoundError,
+    CredentialProfileNotFoundError,
     LastStrategyDeletionError,
     StrategyNotFoundError,
     get_brand_studio_service,
@@ -71,6 +70,17 @@ def _account_not_found_as_http_404():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Account not found",
+        ) from exc
+
+
+@contextmanager
+def _credential_profile_not_found_as_http_404():
+    try:
+        yield
+    except CredentialProfileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Credential profile not found",
         ) from exc
 
 
@@ -502,130 +512,131 @@ async def activate_strategy(
     return ConfigResponse(active_strategy_id=active.id, active_strategy=active)
 
 
-@router.get("/integrations", response_model=IntegrationsResponse)
-async def list_integrations(
+@router.get("/credential-profiles", response_model=ChannelCredentialProfilesResponse)
+async def list_credential_profiles(
     _feature: FeatureDep,
     service: ServiceDep,
     _actor: OptionalActorDep,
-) -> IntegrationsResponse:
-    return IntegrationsResponse(items=service.integrations())
+    channel: Annotated[ChannelId | None, Query()] = None,
+    role: Annotated[CredentialProfileRole | None, Query()] = None,
+    status_filter: Annotated[CredentialProfileStatus | None, Query(alias="status")] = None,
+) -> ChannelCredentialProfilesResponse:
+    return service.credential_profiles(
+        channel=channel,
+        role=role,
+        status_filter=status_filter,
+    )
 
 
 @router.post(
-    "/integrations/{integration_id}/test",
-    response_model=IntegrationTestResponse,
+    "/credential-profiles",
+    response_model=ChannelCredentialProfileResponse,
+    responses={
+        400: {"description": "Invalid credential profile payload"},
+        409: {"description": "Duplicate credential profile"},
+    },
 )
-async def test_integration(
-    integration_id: IntegrationId,
+async def create_credential_profile(
+    payload: ChannelCredentialProfileCreateRequest,
     _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
-) -> IntegrationTestResponse:
-    return service.test_integration(integration_id=integration_id, actor=actor)
-
-
-@router.get("/channels", response_model=ChannelsResponse)
-async def list_channels(
-    _feature: FeatureDep,
-    service: ServiceDep,
-    _actor: OptionalActorDep,
-) -> ChannelsResponse:
-    return service.channels()
-
-
-@router.get("/channels/{channel}/accounts", response_model=ChannelAccountsResponse)
-async def list_channel_accounts(
-    channel: ChannelId,
-    _feature: FeatureDep,
-    service: ServiceDep,
-    _actor: OptionalActorDep,
-) -> ChannelAccountsResponse:
-    return service.channel_accounts(channel)
-
-
-@router.post("/channels/{channel}/accounts", response_model=ChannelAccountResponse)
-async def create_channel_account(
-    channel: ChannelId,
-    payload: ChannelAccountCreateRequest,
-    _feature: FeatureDep,
-    service: ServiceDep,
-    actor: ActorDep,
-    _autonomy: AutonomyDep,
-) -> ChannelAccountResponse:
-    item = service.create_channel_account(channel, payload, actor=actor)
-    return ChannelAccountResponse(item=item)
+) -> ChannelCredentialProfileResponse:
+    try:
+        item = service.create_credential_profile(payload, actor=actor)
+    except ValueError as exc:
+        if str(exc) == "account_duplicate":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Duplicate credential profile",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return ChannelCredentialProfileResponse(item=item)
 
 
 @router.put(
-    "/channels/{channel}/accounts/{account_id}",
-    response_model=ChannelAccountResponse,
-    responses={404: {"description": "Account not found"}},
+    "/credential-profiles/{profile_id}",
+    response_model=ChannelCredentialProfileResponse,
+    responses={
+        400: {"description": "Invalid credential profile payload"},
+        404: {"description": "Credential profile not found"},
+    },
 )
-async def update_channel_account(
-    channel: ChannelId,
-    account_id: str,
-    payload: ChannelAccountUpdateRequest,
+async def update_credential_profile(
+    profile_id: str,
+    payload: ChannelCredentialProfileUpdateRequest,
     _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
-) -> ChannelAccountResponse:
-    with _account_not_found_as_http_404():
-        item = service.update_channel_account(channel, account_id, payload, actor=actor)
-    return ChannelAccountResponse(item=item)
+) -> ChannelCredentialProfileResponse:
+    try:
+        with _credential_profile_not_found_as_http_404():
+            item = service.update_credential_profile(profile_id, payload, actor=actor)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except ChannelAccountNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return ChannelCredentialProfileResponse(item=item)
 
 
 @router.delete(
-    "/channels/{channel}/accounts/{account_id}",
+    "/credential-profiles/{profile_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: {"description": "Account not found"}},
+    responses={404: {"description": "Credential profile not found"}},
 )
-async def delete_channel_account(
-    channel: ChannelId,
-    account_id: str,
+async def delete_credential_profile(
+    profile_id: str,
     _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
 ) -> None:
-    with _account_not_found_as_http_404():
-        service.delete_channel_account(channel, account_id, actor=actor)
+    with _credential_profile_not_found_as_http_404():
+        service.delete_credential_profile(profile_id, actor=actor)
 
 
 @router.post(
-    "/channels/{channel}/accounts/{account_id}/activate",
-    response_model=ChannelAccountResponse,
-    responses={404: {"description": "Account not found"}},
+    "/credential-profiles/{profile_id}/activate",
+    response_model=ChannelCredentialProfileResponse,
+    responses={404: {"description": "Credential profile not found"}},
 )
-async def activate_channel_account(
-    channel: ChannelId,
-    account_id: str,
+async def activate_credential_profile(
+    profile_id: str,
     _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
-) -> ChannelAccountResponse:
-    with _account_not_found_as_http_404():
-        item = service.activate_channel_account(channel, account_id, actor=actor)
-    return ChannelAccountResponse(item=item)
+) -> ChannelCredentialProfileResponse:
+    with _credential_profile_not_found_as_http_404():
+        item = service.activate_credential_profile(profile_id, actor=actor)
+    return ChannelCredentialProfileResponse(item=item)
 
 
 @router.post(
-    "/channels/{channel}/accounts/{account_id}/test",
-    response_model=ChannelAccountTestResponse,
-    responses={404: {"description": "Account not found"}},
+    "/credential-profiles/{profile_id}/test",
+    response_model=ChannelCredentialProfileTestResponse,
+    responses={404: {"description": "Credential profile not found"}},
 )
-async def test_channel_account(
-    channel: ChannelId,
-    account_id: str,
+async def test_credential_profile(
+    profile_id: str,
     _feature: FeatureDep,
     service: ServiceDep,
     actor: ActorDep,
     _autonomy: AutonomyDep,
-) -> ChannelAccountTestResponse:
-    with _account_not_found_as_http_404():
-        return service.test_channel_account(channel, account_id, actor=actor)
+) -> ChannelCredentialProfileTestResponse:
+    with _credential_profile_not_found_as_http_404():
+        return service.test_credential_profile(profile_id, actor=actor)
 
 
 # ---- Monitoring: Keywords ----

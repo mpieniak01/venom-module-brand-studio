@@ -30,19 +30,9 @@ type Tab =
   | "config"
   | "integrations";
 type DiscoveryMode = "stub" | "hybrid" | "live";
-type IntegrationId =
-  | "github_publish"
-  | "rss"
-  | "hn"
-  | "arxiv"
-  | "x"
-  | "devto_publish"
-  | "reddit_publish"
-  | "hashnode_publish"
-  | "linkedin_publish"
-  | "medium_publish"
-  | "hf_blog_publish"
-  | "hf_spaces_publish";
+type CredentialProfileRole = "primary_brand" | "supporting_brand";
+type CredentialProfileAuthMode = "api_key" | "oauth" | "login_password" | "username_only" | "none";
+type CredentialProfileStatus = "configured" | "incomplete" | "invalid" | "disabled";
 
 type Candidate = {
   id: string;
@@ -128,50 +118,21 @@ type StrategiesResponse = {
   items: StrategyConfig[];
 };
 
-type IntegrationDescriptor = {
-  id: IntegrationId;
-  name: string;
-  requires_key: boolean;
-  status: "configured" | "missing" | "invalid";
-  details: string;
-  key_hint?: string | null;
-  masked_secret?: string | null;
-  configured_target?: string | null;
-};
-
-type IntegrationsResponse = {
-  items: IntegrationDescriptor[];
-};
-
-type IntegrationTestResponse = {
-  id: IntegrationId;
-  success: boolean;
-  status: "configured" | "missing" | "invalid";
-  tested_at: string;
-  message: string;
-};
-
-type ChannelDescriptor = {
-  id: PublishChannel;
-  accounts_count: number;
-  default_account_id?: string | null;
-};
-
-type ChannelsResponse = {
-  items: ChannelDescriptor[];
-};
-
-type ChannelAccount = {
-  account_id: string;
+type CredentialProfile = {
+  profile_id: string;
   channel: PublishChannel;
-  display_name: string;
+  role: CredentialProfileRole;
+  identity_display_name: string;
+  identity_handle?: string | null;
+  auth_mode: CredentialProfileAuthMode;
+  status: CredentialProfileStatus;
   target?: string | null;
   enabled: boolean;
   is_default: boolean;
-  secret_status: "configured" | "missing" | "invalid";
+  supports_profile_id?: string | null;
   capabilities: string[];
   last_tested_at?: string | null;
-  last_test_status?: "configured" | "missing" | "invalid" | null;
+  last_test_status?: string | null;
   last_test_message?: string | null;
   successful_publishes: number;
   failed_publishes: number;
@@ -180,9 +141,32 @@ type ChannelAccount = {
   last_publish_message?: string | null;
 };
 
-type ChannelAccountsResponse = {
-  channel: PublishChannel;
-  items: ChannelAccount[];
+type CredentialProfilesResponse = {
+  count: number;
+  items: CredentialProfile[];
+};
+
+type CredentialProfileResponse = {
+  item: CredentialProfile;
+};
+
+type CredentialProfileTestResponse = {
+  profile_id: string;
+  success: boolean;
+  status: CredentialProfileStatus;
+  tested_at: string;
+  message: string;
+};
+
+type CredentialProfileEditDraft = {
+  role: CredentialProfileRole;
+  identity_display_name: string;
+  identity_handle: string;
+  auth_mode: CredentialProfileAuthMode;
+  target: string;
+  auth_secret: string;
+  enabled: boolean;
+  supports_profile_id: string;
 };
 
 type KeywordType = "brand_core" | "brand_product" | "brand_person" | "risk_term" | "competitor_context";
@@ -281,7 +265,7 @@ async function extractErrorMessage(resp: Response): Promise<string> {
 function formatFixedDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return "0000-00-00 00:00:00";
+    return "—";
   }
   const yyyy = date.getFullYear().toString().padStart(4, "0");
   const mm = (date.getMonth() + 1).toString().padStart(2, "0");
@@ -293,10 +277,19 @@ function formatFixedDateTime(value: string): string {
 }
 
 function truncateMiddle(value: string, maxLength: number): string {
+  if (maxLength <= 0) {
+    return "";
+  }
   if (value.length <= maxLength) {
     return value;
   }
-  const keep = Math.max(4, Math.floor((maxLength - 1) / 2));
+  if (maxLength <= 3) {
+    return value.slice(0, maxLength);
+  }
+  if (maxLength < 9) {
+    return `${value.slice(0, maxLength - 1)}…`;
+  }
+  const keep = Math.floor((maxLength - 1) / 2);
   return `${value.slice(0, keep)}…${value.slice(-keep)}`;
 }
 
@@ -523,21 +516,28 @@ export default function BrandStudioPage() {
   const [configError, setConfigError] = useState<string | null>(null);
   const [strategyName, setStrategyName] = useState("");
 
-  const [integrations, setIntegrations] = useState<IntegrationDescriptor[]>([]);
+  const [credentialProfiles, setCredentialProfiles] = useState<CredentialProfile[]>([]);
   const [integrationLoading, setIntegrationLoading] = useState(false);
   const [integrationError, setIntegrationError] = useState<string | null>(null);
   const [integrationTests, setIntegrationTests] = useState<Record<string, string>>({});
-  const [channelDescriptors, setChannelDescriptors] = useState<ChannelDescriptor[]>([]);
-  const [accountsByChannel, setAccountsByChannel] = useState<Partial<Record<PublishChannel, ChannelAccount[]>>>({});
   const [selectedAccountByChannel, setSelectedAccountByChannel] = useState<
     Partial<Record<PublishChannel, string>>
   >({});
-  const [accountDraftDisplayNameByChannel, setAccountDraftDisplayNameByChannel] = useState<
-    Partial<Record<PublishChannel, string>>
-  >({});
-  const [accountDraftTargetByChannel, setAccountDraftTargetByChannel] = useState<
-    Partial<Record<PublishChannel, string>>
-  >({});
+  const [profileChannelFilter, setProfileChannelFilter] = useState<"all" | PublishChannel>("all");
+  const [profileRoleFilter, setProfileRoleFilter] = useState<"all" | CredentialProfileRole>("all");
+  const [profileStatusFilter, setProfileStatusFilter] = useState<"all" | CredentialProfileStatus>("all");
+  const [newProfileChannel, setNewProfileChannel] = useState<PublishChannel>("github");
+  const [newProfileRole, setNewProfileRole] = useState<CredentialProfileRole>("primary_brand");
+  const [newProfileAuthMode, setNewProfileAuthMode] = useState<CredentialProfileAuthMode>("api_key");
+  const [newProfileName, setNewProfileName] = useState("");
+  const [newProfileHandle, setNewProfileHandle] = useState("");
+  const [newProfileTarget, setNewProfileTarget] = useState("");
+  const [newProfileSecret, setNewProfileSecret] = useState("");
+  const [newProfileSupportsId, setNewProfileSupportsId] = useState("");
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [editingProfileDraft, setEditingProfileDraft] = useState<CredentialProfileEditDraft | null>(
+    null
+  );
 
   const [monitoringSummary, setMonitoringSummary] = useState<BrandMonitoringSummary | null>(null);
   const [monitoringResults, setMonitoringResults] = useState<BrandSearchResult[]>([]);
@@ -707,68 +707,40 @@ export default function BrandStudioPage() {
     }
   }, [normalizeStrategy]);
 
-  const loadIntegrations = useCallback(async () => {
+  const loadCredentialProfiles = useCallback(async () => {
     setIntegrationLoading(true);
     setIntegrationError(null);
     try {
-      const response = await fetch("/api/v1/brand-studio/integrations", { cache: "no-store" });
+      const response = await fetch("/api/v1/brand-studio/credential-profiles", {
+        cache: "no-store",
+      });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      const payload = (await response.json()) as IntegrationsResponse;
-      setIntegrations(payload.items);
-    } catch (err) {
-      setIntegrationError(err instanceof Error ? err.message : "unknown_error");
-    } finally {
-      setIntegrationLoading(false);
-    }
-  }, []);
+      const payload = (await response.json()) as CredentialProfilesResponse;
+      setCredentialProfiles(payload.items);
 
-  const loadChannels = useCallback(async () => {
-    setIntegrationLoading(true);
-    setIntegrationError(null);
-    try {
-      const response = await fetch("/api/v1/brand-studio/channels", { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const payload = (await response.json()) as ChannelsResponse;
-      setChannelDescriptors(payload.items);
-
-      const accountPairs = await Promise.all(
-        payload.items.map(async (channel) => {
-          const accountsResponse = await fetch(
-            `/api/v1/brand-studio/channels/${channel.id}/accounts`,
-            { cache: "no-store" }
-          );
-          if (!accountsResponse.ok) {
-            throw new Error(`HTTP ${accountsResponse.status}`);
-          }
-          const accountsPayload = (await accountsResponse.json()) as ChannelAccountsResponse;
-          return [channel.id, accountsPayload.items] as const;
-        })
-      );
-
-      const nextAccountsByChannel: Partial<Record<PublishChannel, ChannelAccount[]>> = {};
       const nextSelectedByChannel: Partial<Record<PublishChannel, string>> = {};
-      for (const [channelId, accounts] of accountPairs) {
-        nextAccountsByChannel[channelId] = accounts;
+      for (const channelId of CHANNELS) {
+        const accounts = payload.items.filter(
+          (item) => item.channel === channelId && item.enabled
+        );
         const selected =
-          accounts.find((item) => item.is_default)?.account_id ?? accounts[0]?.account_id;
+          accounts.find((item) => item.is_default)?.profile_id ?? accounts[0]?.profile_id;
         if (selected) {
           nextSelectedByChannel[channelId] = selected;
         }
       }
-      setAccountsByChannel(nextAccountsByChannel);
       setSelectedAccountByChannel((previous) => {
         const validatedPrevious: Partial<Record<PublishChannel, string>> = {};
-        for (const [channelId, accounts] of Object.entries(
-          nextAccountsByChannel
-        ) as [PublishChannel, ChannelAccount[]][]) {
+        for (const channelId of CHANNELS) {
           const prevSelected = previous[channelId];
+          const accounts = payload.items.filter(
+            (item) => item.channel === channelId && item.enabled
+          );
           if (
             prevSelected &&
-            accounts.some((account) => account.account_id === prevSelected)
+            accounts.some((account) => account.profile_id === prevSelected)
           ) {
             validatedPrevious[channelId] = prevSelected;
           }
@@ -854,13 +826,12 @@ export default function BrandStudioPage() {
     void loadQueue();
     void loadAudit();
     void loadConfig();
-    void loadIntegrations();
-    void loadChannels();
+    void loadCredentialProfiles();
     void loadMonitoring();
     void loadKeywords();
     void loadBaseSources();
     void loadCampaigns();
-  }, [loadQueue, loadAudit, loadConfig, loadIntegrations, loadChannels, loadMonitoring, loadKeywords, loadBaseSources, loadCampaigns]);
+  }, [loadQueue, loadAudit, loadConfig, loadCredentialProfiles, loadMonitoring, loadKeywords, loadBaseSources, loadCampaigns]);
 
   const stats = useMemo(() => {
     if (!items.length) {
@@ -902,6 +873,19 @@ export default function BrandStudioPage() {
     return "border-amber-400/30 bg-amber-500/15 text-amber-200";
   }, []);
 
+  const profileStatusClass = useCallback((status: CredentialProfileStatus): string => {
+    if (status === "configured") {
+      return "border-emerald-400/30 bg-emerald-500/15 text-emerald-200";
+    }
+    if (status === "invalid") {
+      return "border-rose-400/30 bg-rose-500/15 text-rose-200";
+    }
+    if (status === "disabled") {
+      return "border-zinc-500/30 bg-zinc-500/15 text-zinc-300";
+    }
+    return "border-amber-400/30 bg-amber-500/15 text-amber-200";
+  }, []);
+
   const filteredQueue = useMemo(() => {
     const queueForBrand = queue.filter((item) => item.target_channel !== "github");
     return queueForBrand.filter((item) => {
@@ -932,6 +916,68 @@ export default function BrandStudioPage() {
       return true;
     });
   }, [audit, auditCategoryFilter, auditOutcome, auditOutcomeFilter, auditStatusFilter]);
+
+  const profilesByChannel = useMemo(() => {
+    const grouped: Partial<Record<PublishChannel, CredentialProfile[]>> = {};
+    for (const channelId of CHANNELS) {
+      grouped[channelId] = credentialProfiles
+        .filter((item) => item.channel === channelId)
+        .sort((a, b) => {
+          if (a.is_default !== b.is_default) {
+            return a.is_default ? -1 : 1;
+          }
+          return a.identity_display_name.localeCompare(b.identity_display_name);
+        });
+    }
+    return grouped;
+  }, [credentialProfiles]);
+
+  const filteredProfiles = useMemo(() => {
+    return credentialProfiles
+      .filter((item) => {
+        if (profileChannelFilter !== "all" && item.channel !== profileChannelFilter) {
+          return false;
+        }
+        if (profileRoleFilter !== "all" && item.role !== profileRoleFilter) {
+          return false;
+        }
+        if (profileStatusFilter !== "all" && item.status !== profileStatusFilter) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.channel !== b.channel) {
+          return a.channel.localeCompare(b.channel);
+        }
+        if (a.role !== b.role) {
+          return a.role === "primary_brand" ? -1 : 1;
+        }
+        return a.identity_display_name.localeCompare(b.identity_display_name);
+      });
+  }, [credentialProfiles, profileChannelFilter, profileRoleFilter, profileStatusFilter]);
+
+  const supportingCandidates = useMemo(() => {
+    return credentialProfiles.filter(
+      (item) => item.channel === newProfileChannel && item.role === "primary_brand"
+    );
+  }, [credentialProfiles, newProfileChannel]);
+
+  const editingSupportingCandidates = useMemo(() => {
+    if (!editingProfileDraft || !editingProfileId) {
+      return [] as CredentialProfile[];
+    }
+    const editing = credentialProfiles.find((item) => item.profile_id === editingProfileId);
+    if (!editing) {
+      return [] as CredentialProfile[];
+    }
+    return credentialProfiles.filter(
+      (item) =>
+        item.channel === editing.channel &&
+        item.role === "primary_brand" &&
+        item.profile_id !== editing.profile_id
+    );
+  }, [credentialProfiles, editingProfileDraft, editingProfileId]);
 
   const generateDraft = useCallback(async () => {
     if (!selectedCandidateId) {
@@ -1248,90 +1294,159 @@ export default function BrandStudioPage() {
     [loadAudit, loadCandidates, loadConfig]
   );
 
-  const runIntegrationTest = useCallback(
-    async (integrationId: IntegrationId) => {
-      setIntegrationLoading(true);
-      setIntegrationError(null);
-      try {
-        const response = await fetch(`/api/v1/brand-studio/integrations/${integrationId}/test`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Authenticated-User": "local-user",
-          },
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        const payload = (await response.json()) as IntegrationTestResponse;
-        setIntegrationTests((previous) => ({
-          ...previous,
-          [integrationId]: `${payload.status}: ${payload.message}`,
-        }));
-        await loadIntegrations();
-        await loadAudit();
-      } catch (err) {
-        setIntegrationError(err instanceof Error ? err.message : "unknown_error");
-      } finally {
-        setIntegrationLoading(false);
-      }
-    },
-    [loadAudit, loadIntegrations]
-  );
+  const startEditCredentialProfile = useCallback((profile: CredentialProfile) => {
+    setEditingProfileId(profile.profile_id);
+    setEditingProfileDraft({
+      role: profile.role,
+      identity_display_name: profile.identity_display_name,
+      identity_handle: profile.identity_handle ?? "",
+      auth_mode: profile.auth_mode,
+      target: profile.target ?? "",
+      auth_secret: "",
+      enabled: profile.enabled,
+      supports_profile_id: profile.supports_profile_id ?? "",
+    });
+    setIntegrationError(null);
+  }, []);
 
-  const createChannelAccount = useCallback(
-    async (channelId: PublishChannel) => {
-      const displayName = (accountDraftDisplayNameByChannel[channelId] ?? "").trim();
-      if (!displayName) {
-        setIntegrationError(t("accounts.validationName"));
-        return;
-      }
-      setIntegrationLoading(true);
-      setIntegrationError(null);
-      try {
-        const response = await fetch(`/api/v1/brand-studio/channels/${channelId}/accounts`, {
-          method: "POST",
+  const cancelEditCredentialProfile = useCallback(() => {
+    setEditingProfileId(null);
+    setEditingProfileDraft(null);
+  }, []);
+
+  const saveCredentialProfileEdit = useCallback(async () => {
+    if (!editingProfileId || !editingProfileDraft) {
+      return;
+    }
+    const displayName = editingProfileDraft.identity_display_name.trim();
+    if (!displayName) {
+      setIntegrationError(t("accounts.validationName"));
+      return;
+    }
+    if (
+      editingProfileDraft.role === "supporting_brand" &&
+      !editingProfileDraft.supports_profile_id
+    ) {
+      setIntegrationError(
+        lang === "pl"
+          ? "Wybierz profil główny do wsparcia."
+          : "Select a primary profile to support."
+      );
+      return;
+    }
+
+    setIntegrationLoading(true);
+    setIntegrationError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/brand-studio/credential-profiles/${editingProfileId}`,
+        {
+          method: "PUT",
           headers: {
             "Content-Type": "application/json",
             "X-Authenticated-User": "local-user",
           },
           body: JSON.stringify({
-            display_name: displayName,
-            target: (accountDraftTargetByChannel[channelId] ?? "").trim() || null,
-            is_default: !accountsByChannel[channelId]?.length,
-            enabled: true,
+            role: editingProfileDraft.role,
+            identity_display_name: displayName,
+            identity_handle: editingProfileDraft.identity_handle.trim() || null,
+            auth_mode: editingProfileDraft.auth_mode,
+            auth_secret: editingProfileDraft.auth_secret.trim() || null,
+            target: editingProfileDraft.target.trim() || null,
+            enabled: editingProfileDraft.enabled,
+            supports_profile_id:
+              editingProfileDraft.role === "supporting_brand"
+                ? editingProfileDraft.supports_profile_id || null
+                : null,
           }),
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
         }
-        setAccountDraftDisplayNameByChannel((previous) => ({ ...previous, [channelId]: "" }));
-        setAccountDraftTargetByChannel((previous) => ({ ...previous, [channelId]: "" }));
-        await loadChannels();
-        await loadAudit();
-      } catch (err) {
-        setIntegrationError(err instanceof Error ? err.message : "unknown_error");
-      } finally {
-        setIntegrationLoading(false);
+      );
+      if (!response.ok) {
+        throw new Error(await extractErrorMessage(response));
       }
-    },
-    [
-      accountDraftDisplayNameByChannel,
-      accountDraftTargetByChannel,
-      accountsByChannel,
-      loadAudit,
-      loadChannels,
-      t,
-    ]
-  );
+      await loadCredentialProfiles();
+      await loadAudit();
+      setEditingProfileId(null);
+      setEditingProfileDraft(null);
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setIntegrationLoading(false);
+    }
+  }, [editingProfileDraft, editingProfileId, lang, loadAudit, loadCredentialProfiles, t]);
 
-  const activateChannelAccount = useCallback(
-    async (channelId: PublishChannel, accountId: string) => {
+  const createCredentialProfile = useCallback(async () => {
+    const displayName = newProfileName.trim();
+    if (!displayName) {
+      setIntegrationError(t("accounts.validationName"));
+      return;
+    }
+    if (newProfileRole === "supporting_brand" && !newProfileSupportsId) {
+      setIntegrationError(
+        lang === "pl" ? "Wybierz profil główny do wsparcia." : "Select a primary profile to support."
+      );
+      return;
+    }
+    setIntegrationLoading(true);
+    setIntegrationError(null);
+    try {
+      const response = await fetch("/api/v1/brand-studio/credential-profiles", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Authenticated-User": "local-user",
+        },
+        body: JSON.stringify({
+          channel: newProfileChannel,
+          role: newProfileRole,
+          identity_display_name: displayName,
+          identity_handle: newProfileHandle.trim() || null,
+          auth_mode: newProfileAuthMode,
+          auth_secret: newProfileSecret.trim() || null,
+          target: newProfileTarget.trim() || null,
+          enabled: true,
+          supports_profile_id:
+            newProfileRole === "supporting_brand" ? newProfileSupportsId || null : null,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await extractErrorMessage(response));
+      }
+      await response.json() as CredentialProfileResponse;
+      setNewProfileName("");
+      setNewProfileHandle("");
+      setNewProfileTarget("");
+      setNewProfileSecret("");
+      setNewProfileSupportsId("");
+      await loadCredentialProfiles();
+      await loadAudit();
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setIntegrationLoading(false);
+    }
+  }, [
+    lang,
+    loadAudit,
+    loadCredentialProfiles,
+    newProfileAuthMode,
+    newProfileChannel,
+    newProfileHandle,
+    newProfileName,
+    newProfileRole,
+    newProfileSecret,
+    newProfileSupportsId,
+    newProfileTarget,
+    t,
+  ]);
+
+  const activateCredentialProfile = useCallback(
+    async (profileId: string) => {
       setIntegrationLoading(true);
       setIntegrationError(null);
       try {
         const response = await fetch(
-          `/api/v1/brand-studio/channels/${channelId}/accounts/${accountId}/activate`,
+          `/api/v1/brand-studio/credential-profiles/${profileId}/activate`,
           {
             method: "POST",
             headers: {
@@ -1341,9 +1456,9 @@ export default function BrandStudioPage() {
           }
         );
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+          throw new Error(await extractErrorMessage(response));
         }
-        await loadChannels();
+        await loadCredentialProfiles();
         await loadAudit();
       } catch (err) {
         setIntegrationError(err instanceof Error ? err.message : "unknown_error");
@@ -1351,16 +1466,16 @@ export default function BrandStudioPage() {
         setIntegrationLoading(false);
       }
     },
-    [loadAudit, loadChannels]
+    [loadAudit, loadCredentialProfiles]
   );
 
-  const testChannelAccount = useCallback(
-    async (channelId: PublishChannel, accountId: string) => {
+  const testCredentialProfile = useCallback(
+    async (profileId: string) => {
       setIntegrationLoading(true);
       setIntegrationError(null);
       try {
         const response = await fetch(
-          `/api/v1/brand-studio/channels/${channelId}/accounts/${accountId}/test`,
+          `/api/v1/brand-studio/credential-profiles/${profileId}/test`,
           {
             method: "POST",
             headers: {
@@ -1370,18 +1485,14 @@ export default function BrandStudioPage() {
           }
         );
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+          throw new Error(await extractErrorMessage(response));
         }
-        const payload = (await response.json()) as {
-          account_id: string;
-          status: string;
-          message: string;
-        };
+        const payload = (await response.json()) as CredentialProfileTestResponse;
         setIntegrationTests((previous) => ({
           ...previous,
-          [`${channelId}:${accountId}`]: `${payload.status}: ${payload.message}`,
+          [profileId]: `${payload.status}: ${payload.message}`,
         }));
-        await loadChannels();
+        await loadCredentialProfiles();
         await loadAudit();
       } catch (err) {
         setIntegrationError(err instanceof Error ? err.message : "unknown_error");
@@ -1389,16 +1500,16 @@ export default function BrandStudioPage() {
         setIntegrationLoading(false);
       }
     },
-    [loadAudit, loadChannels]
+    [loadAudit, loadCredentialProfiles]
   );
 
-  const deleteChannelAccount = useCallback(
-    async (channelId: PublishChannel, accountId: string) => {
+  const deleteCredentialProfile = useCallback(
+    async (profileId: string) => {
       setIntegrationLoading(true);
       setIntegrationError(null);
       try {
         const response = await fetch(
-          `/api/v1/brand-studio/channels/${channelId}/accounts/${accountId}`,
+          `/api/v1/brand-studio/credential-profiles/${profileId}`,
           {
             method: "DELETE",
             headers: {
@@ -1408,9 +1519,9 @@ export default function BrandStudioPage() {
           }
         );
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+          throw new Error(await extractErrorMessage(response));
         }
-        await loadChannels();
+        await loadCredentialProfiles();
         await loadAudit();
       } catch (err) {
         setIntegrationError(err instanceof Error ? err.message : "unknown_error");
@@ -1418,7 +1529,7 @@ export default function BrandStudioPage() {
         setIntegrationLoading(false);
       }
     },
-    [loadAudit, loadChannels]
+    [loadAudit, loadCredentialProfiles]
   );
 
   const addKeyword = useCallback(async () => {
@@ -1822,7 +1933,7 @@ export default function BrandStudioPage() {
                       <p className="text-xs uppercase text-zinc-400">
                         {variant.channel} / {variant.language}
                       </p>
-                      {accountsByChannel[variant.channel]?.length ? (
+                      {profilesByChannel[variant.channel]?.length ? (
                         <label className="mt-2 block space-y-1">
                           <span className="inline-flex items-center gap-1 text-[11px] uppercase text-zinc-500">
                             {t("queue.account")}
@@ -1831,8 +1942,9 @@ export default function BrandStudioPage() {
                           <select
                             value={
                               selectedAccountByChannel[variant.channel] ??
-                              accountsByChannel[variant.channel]?.find((item) => item.is_default)?.account_id ??
-                              accountsByChannel[variant.channel]?.[0]?.account_id ??
+                              profilesByChannel[variant.channel]?.find((item) => item.is_default)
+                                ?.profile_id ??
+                              profilesByChannel[variant.channel]?.[0]?.profile_id ??
                               ""
                             }
                             onChange={(event) =>
@@ -1843,9 +1955,9 @@ export default function BrandStudioPage() {
                             }
                             className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
                           >
-                            {accountsByChannel[variant.channel]?.map((account) => (
-                              <option key={account.account_id} value={account.account_id}>
-                                {account.display_name}
+                            {profilesByChannel[variant.channel]?.map((account) => (
+                              <option key={account.profile_id} value={account.profile_id}>
+                                {account.identity_display_name}
                               </option>
                             ))}
                           </select>
@@ -2335,208 +2447,417 @@ export default function BrandStudioPage() {
       ) : null}
 
       {tab === "integrations" ? (
-        <section className="grid gap-4 lg:grid-cols-2">
+        <section className="space-y-4">
           <div className="glass-panel space-y-4 rounded-2xl border border-violet-500/20 p-4">
             <h3 className="inline-flex items-center gap-2 text-base font-medium text-zinc-100">
               {t("tabs.integrations")}
               <HelpBadge tip={help("tabs.integrations")} />
             </h3>
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Krok 1: Kanał" : "Step 1: Channel"}
+                </span>
+                <select
+                  value={newProfileChannel}
+                  onChange={(event) => setNewProfileChannel(event.target.value as PublishChannel)}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                >
+                  {CHANNELS.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Krok 2: Rola" : "Step 2: Role"}
+                </span>
+                <select
+                  value={newProfileRole}
+                  onChange={(event) => setNewProfileRole(event.target.value as CredentialProfileRole)}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="primary_brand">primary_brand</option>
+                  <option value="supporting_brand">supporting_brand</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Krok 3: Auth" : "Step 3: Auth"}
+                </span>
+                <select
+                  value={newProfileAuthMode}
+                  onChange={(event) =>
+                    setNewProfileAuthMode(event.target.value as CredentialProfileAuthMode)
+                  }
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="api_key">api_key</option>
+                  <option value="oauth">oauth</option>
+                  <option value="login_password">login_password</option>
+                  <option value="username_only">username_only</option>
+                  <option value="none">none</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">{t("accounts.displayName")}</span>
+                <input
+                  value={newProfileName}
+                  onChange={(event) => setNewProfileName(event.target.value)}
+                  placeholder={t("accounts.displayName")}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Login / handle" : "Login / handle"}
+                </span>
+                <input
+                  value={newProfileHandle}
+                  onChange={(event) => setNewProfileHandle(event.target.value)}
+                  placeholder={lang === "pl" ? "@nazwa lub login" : "@handle or login"}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">{t("accounts.target")}</span>
+                <input
+                  value={newProfileTarget}
+                  onChange={(event) => setNewProfileTarget(event.target.value)}
+                  placeholder={t("accounts.target")}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Sekret (opcjonalnie)" : "Secret (optional)"}
+                </span>
+                <input
+                  type="password"
+                  value={newProfileSecret}
+                  onChange={(event) => setNewProfileSecret(event.target.value)}
+                  placeholder={lang === "pl" ? "token / hasło" : "token / password"}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+              {newProfileRole === "supporting_brand" ? (
+                <label className="space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">
+                    {lang === "pl" ? "Profil główny" : "Primary profile"}
+                  </span>
+                  <select
+                    value={newProfileSupportsId}
+                    onChange={(event) => setNewProfileSupportsId(event.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  >
+                    <option value="">{lang === "pl" ? "Wybierz profil" : "Select profile"}</option>
+                    {supportingCandidates.map((item) => (
+                      <option key={item.profile_id} value={item.profile_id}>
+                        {item.identity_display_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => void createCredentialProfile()}
+                disabled={integrationLoading}
+                className="rounded-lg border border-emerald-500/40 px-4 py-2 text-xs text-emerald-100 disabled:opacity-50"
+              >
+                {t("accounts.add")}
+              </button>
+            </div>
             {integrationLoading ? <p className="text-zinc-400">{t("integrations.loading")}</p> : null}
             {integrationError ? <p className="text-rose-300">{integrationError}</p> : null}
-            {!integrationLoading && !integrations.length ? (
-              <p className="text-zinc-400">{t("integrations.empty")}</p>
-            ) : null}
-            <div className="max-h-[920px] space-y-3 overflow-y-auto pr-1">
-              {integrations.map((item) => (
-                <article key={item.id} className="rounded-xl border border-zinc-800 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-base font-medium text-zinc-100">{item.name}</h3>
-                    <span className="rounded bg-zinc-800 px-2 py-1 text-xs uppercase text-zinc-200">
-                      {item.status}
-                    </span>
-                    <span className="rounded bg-zinc-800 px-2 py-1 text-xs uppercase text-zinc-400">
-                      {item.requires_key ? t("integrations.keyRequired") : t("integrations.public")}
-                    </span>
-                    <HelpBadge
-                      tip={help(
-                        item.requires_key ? "integrations.keyRequired" : "integrations.public"
-                      )}
-                    />
-                  </div>
-                  <p className="mt-2 text-sm text-zinc-300">{item.details}</p>
-                  {item.key_hint ? (
-                    <p className="mt-1 text-xs text-zinc-500">
-                      {t("integrations.key")}: {item.key_hint}
-                      <span className="ml-1 align-middle">
-                        <HelpBadge tip={help("integrations.key")} />
-                      </span>
-                    </p>
-                  ) : null}
-                  {item.masked_secret ? (
-                    <p className="mt-1 text-xs text-zinc-500">
-                      {t("integrations.masked")} {item.masked_secret}
-                    </p>
-                  ) : null}
-                  {item.configured_target ? (
-                    <p className="mt-1 text-xs text-zinc-500">target: {item.configured_target}</p>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => void runIntegrationTest(item.id)}
-                    disabled={integrationLoading}
-                    className="mt-3 rounded-lg border border-violet-500/40 px-3 py-1 text-xs text-violet-100 disabled:opacity-50"
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      {t("integrations.test")}
-                      <HelpBadge tip={help("integrations.test")} />
-                    </span>
-                  </button>
-                  {integrationTests[item.id] ? (
-                    <p className="mt-2 text-xs text-cyan-200">{integrationTests[item.id]}</p>
-                  ) : null}
-                </article>
-              ))}
-            </div>
           </div>
 
           <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
-            <h3 className="inline-flex items-center gap-2 text-base font-medium text-zinc-100">
-              {t("accounts.title")}
-              <HelpBadge tip={help("accounts.title")} />
-            </h3>
-            {!channelDescriptors.length ? (
+            <div className="grid gap-2 md:grid-cols-3">
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Filtr kanału" : "Channel filter"}
+                </span>
+                <select
+                  value={profileChannelFilter}
+                  onChange={(event) =>
+                    setProfileChannelFilter(event.target.value as "all" | PublishChannel)
+                  }
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="all">{lang === "pl" ? "Wszystkie kanały" : "All channels"}</option>
+                  {CHANNELS.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Filtr roli" : "Role filter"}
+                </span>
+                <select
+                  value={profileRoleFilter}
+                  onChange={(event) =>
+                    setProfileRoleFilter(event.target.value as "all" | CredentialProfileRole)
+                  }
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="all">{lang === "pl" ? "Wszystkie role" : "All roles"}</option>
+                  <option value="primary_brand">primary_brand</option>
+                  <option value="supporting_brand">supporting_brand</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase text-zinc-500">
+                  {lang === "pl" ? "Filtr statusu" : "Status filter"}
+                </span>
+                <select
+                  value={profileStatusFilter}
+                  onChange={(event) =>
+                    setProfileStatusFilter(event.target.value as "all" | CredentialProfileStatus)
+                  }
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="all">{lang === "pl" ? "Wszystkie statusy" : "All statuses"}</option>
+                  <option value="configured">configured</option>
+                  <option value="incomplete">incomplete</option>
+                  <option value="invalid">invalid</option>
+                  <option value="disabled">disabled</option>
+                </select>
+              </label>
+            </div>
+            {!integrationLoading && !filteredProfiles.length ? (
               <p className="text-sm text-zinc-400">{t("accounts.empty")}</p>
             ) : null}
-            <div className="max-h-[920px] space-y-3 overflow-y-auto pr-1">
-              {channelDescriptors.map((descriptor) => (
-                <article key={descriptor.id} className="rounded-xl border border-zinc-800 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h4 className="text-sm font-medium uppercase text-zinc-200">{descriptor.id}</h4>
-                  <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
-                    {t("accounts.count")}: {descriptor.accounts_count}
-                  </span>
-                </div>
-                <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_auto]">
-                  <input
-                    value={accountDraftDisplayNameByChannel[descriptor.id] ?? ""}
-                    onChange={(event) =>
-                      setAccountDraftDisplayNameByChannel((previous) => ({
-                        ...previous,
-                        [descriptor.id]: event.target.value,
-                      }))
-                    }
-                    placeholder={t("accounts.displayName")}
-                    className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                  />
-                  <input
-                    value={accountDraftTargetByChannel[descriptor.id] ?? ""}
-                    onChange={(event) =>
-                      setAccountDraftTargetByChannel((previous) => ({
-                        ...previous,
-                        [descriptor.id]: event.target.value,
-                      }))
-                    }
-                    placeholder={t("accounts.target")}
-                    className="rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void createChannelAccount(descriptor.id)}
-                    disabled={integrationLoading}
-                    className="rounded-lg border border-emerald-500/40 px-3 py-2 text-xs text-emerald-100 disabled:opacity-50"
-                  >
-                    <span className="inline-flex items-center gap-1">
-                      {t("accounts.add")}
-                      <HelpBadge tip={help("accounts.add")} />
-                    </span>
-                  </button>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-zinc-500">
-                  <span className="inline-flex items-center gap-1">
-                    {t("accounts.displayName")}
-                    <HelpBadge tip={help("accounts.displayName")} />
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    {t("accounts.target")}
-                    <HelpBadge tip={help("accounts.target")} />
-                  </span>
-                </div>
-                <div className="mt-3 space-y-2">
-                  {(accountsByChannel[descriptor.id] ?? []).map((account) => (
-                    <div key={account.account_id} className="rounded-lg border border-zinc-800/80 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm text-zinc-100">
-                          {account.display_name}
-                          {account.is_default ? (
-                            <span className="ml-2 rounded bg-cyan-900/40 px-2 py-0.5 text-[10px] uppercase text-cyan-100">
-                              {t("accounts.default")}
-                            </span>
-                          ) : null}
-                        </p>
-                        <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
-                          {account.secret_status}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-xs text-zinc-400">
-                        {t("accounts.target")}: {account.target || "-"}
-                      </p>
-                      <p className="mt-1 text-xs text-zinc-500">
-                        Health: {account.last_test_status ?? account.secret_status}
-                        {account.last_tested_at ? ` @ ${new Date(account.last_tested_at).toLocaleString()}` : ""}
-                      </p>
-                      <p className="mt-1 text-xs text-zinc-500">
-                        Publish: ok={account.successful_publishes} / fail={account.failed_publishes}
-                        {account.last_publish_status
-                          ? ` (last: ${account.last_publish_status}${
-                              account.last_published_at
-                                ? ` @ ${new Date(account.last_published_at).toLocaleString()}`
-                                : ""
-                            })`
+            <div className="max-h-[920px] divide-y divide-white/5 overflow-y-auto pr-1">
+              {filteredProfiles.map((profile) => (
+                <article key={profile.profile_id} className="px-1 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="min-w-0 flex-1 truncate text-sm text-zinc-100">
+                      <span className="font-semibold uppercase">{profile.channel}</span>{" "}
+                      {profile.identity_display_name}{" "}
+                      <span className="text-xs text-zinc-400">
+                        {profile.role} | {profile.auth_mode}
+                        {profile.identity_handle ? ` | ${profile.identity_handle}` : ""}
+                        {profile.target ? ` | ${profile.target}` : ""}
+                        {` | ok=${profile.successful_publishes}/fail=${profile.failed_publishes}`}
+                        {integrationTests[profile.profile_id]
+                          ? ` | ${integrationTests[profile.profile_id]}`
                           : ""}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
+                      </span>
+                      {profile.is_default ? (
+                        <span className="ml-2 rounded bg-cyan-900/40 px-2 py-0.5 text-[10px] uppercase text-cyan-100">
+                          {t("accounts.default")}
+                        </span>
+                      ) : null}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          editingProfileId === profile.profile_id
+                            ? cancelEditCredentialProfile()
+                            : startEditCredentialProfile(profile)
+                        }
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-zinc-600/70 px-2 py-1 text-[11px] text-zinc-200 disabled:opacity-50"
+                      >
+                        {editingProfileId === profile.profile_id
+                          ? (lang === "pl" ? "Zamknij" : "Close")
+                          : (lang === "pl" ? "Edytuj" : "Edit")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void activateCredentialProfile(profile.profile_id)}
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
+                      >
+                        {t("accounts.setDefault")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void testCredentialProfile(profile.profile_id)}
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-violet-500/40 px-2 py-1 text-[11px] text-violet-100 disabled:opacity-50"
+                      >
+                        {t("accounts.test")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteCredentialProfile(profile.profile_id)}
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-rose-500/40 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
+                      >
+                        {t("accounts.delete")}
+                      </button>
+                      <span
+                        className={`rounded border px-2 py-0.5 text-[10px] uppercase ${profileStatusClass(profile.status)}`}
+                      >
+                        {profile.status}
+                      </span>
+                    </div>
+                  </div>
+                  {editingProfileId === profile.profile_id && editingProfileDraft ? (
+                    <div className="mt-2 rounded-xl border border-zinc-800/80 p-3">
+                      <div className="grid gap-2 md:grid-cols-3">
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Rola" : "Role"}
+                          </span>
+                          <select
+                            value={editingProfileDraft.role}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? {
+                                      ...previous,
+                                      role: event.target.value as CredentialProfileRole,
+                                      supports_profile_id:
+                                        event.target.value === "supporting_brand"
+                                          ? previous.supports_profile_id
+                                          : "",
+                                    }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            <option value="primary_brand">primary_brand</option>
+                            <option value="supporting_brand">supporting_brand</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">{t("accounts.displayName")}</span>
+                          <input
+                            value={editingProfileDraft.identity_display_name}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? { ...previous, identity_display_name: event.target.value }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Login / handle" : "Login / handle"}
+                          </span>
+                          <input
+                            value={editingProfileDraft.identity_handle}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous ? { ...previous, identity_handle: event.target.value } : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Auth" : "Auth"}
+                          </span>
+                          <select
+                            value={editingProfileDraft.auth_mode}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? {
+                                      ...previous,
+                                      auth_mode: event.target.value as CredentialProfileAuthMode,
+                                    }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            <option value="api_key">api_key</option>
+                            <option value="oauth">oauth</option>
+                            <option value="login_password">login_password</option>
+                            <option value="username_only">username_only</option>
+                            <option value="none">none</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">{t("accounts.target")}</span>
+                          <input
+                            value={editingProfileDraft.target}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous ? { ...previous, target: event.target.value } : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Nowy sekret" : "New secret"}
+                          </span>
+                          <input
+                            type="password"
+                            value={editingProfileDraft.auth_secret}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous ? { ...previous, auth_secret: event.target.value } : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                      </div>
+                      {editingProfileDraft.role === "supporting_brand" ? (
+                        <label className="mt-2 block space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Profil główny" : "Primary profile"}
+                          </span>
+                          <select
+                            value={editingProfileDraft.supports_profile_id}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? { ...previous, supports_profile_id: event.target.value }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            <option value="">{lang === "pl" ? "Wybierz profil" : "Select profile"}</option>
+                            {editingSupportingCandidates.map((item) => (
+                              <option key={item.profile_id} value={item.profile_id}>
+                                {item.identity_display_name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <div className="mt-2 flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => void activateChannelAccount(descriptor.id, account.account_id)}
+                          onClick={() => void saveCredentialProfileEdit()}
                           disabled={integrationLoading}
-                          className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
+                          className="rounded-lg border border-emerald-500/40 px-3 py-1 text-xs text-emerald-100 disabled:opacity-50"
                         >
-                          <span className="inline-flex items-center gap-1">
-                            {t("accounts.setDefault")}
-                            <HelpBadge tip={help("accounts.setDefault")} />
-                          </span>
+                          {lang === "pl" ? "Zapisz" : "Save"}
                         </button>
                         <button
                           type="button"
-                          onClick={() => void testChannelAccount(descriptor.id, account.account_id)}
+                          onClick={() => cancelEditCredentialProfile()}
                           disabled={integrationLoading}
-                          className="rounded-lg border border-violet-500/40 px-2 py-1 text-[11px] text-violet-100 disabled:opacity-50"
+                          className="rounded-lg border border-zinc-600/70 px-3 py-1 text-xs text-zinc-200 disabled:opacity-50"
                         >
-                          <span className="inline-flex items-center gap-1">
-                            {t("accounts.test")}
-                            <HelpBadge tip={help("accounts.test")} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void deleteChannelAccount(descriptor.id, account.account_id)}
-                          disabled={integrationLoading}
-                          className="rounded-lg border border-rose-500/40 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            {t("accounts.delete")}
-                            <HelpBadge tip={help("accounts.delete")} />
-                          </span>
+                          {lang === "pl" ? "Anuluj" : "Cancel"}
                         </button>
                       </div>
-                      {integrationTests[`${descriptor.id}:${account.account_id}`] ? (
-                        <p className="mt-2 text-xs text-cyan-200">
-                          {integrationTests[`${descriptor.id}:${account.account_id}`]}
-                        </p>
-                      ) : null}
                     </div>
-                  ))}
-                </div>
+                  ) : null}
                 </article>
               ))}
             </div>

@@ -35,11 +35,19 @@ from venom_module_brand_studio.api.schemas import (
     ChannelAccountsResponse,
     ChannelAccountTestResponse,
     ChannelAccountUpdateRequest,
+    ChannelCredentialProfile,
+    ChannelCredentialProfileCreateRequest,
+    ChannelCredentialProfilesResponse,
+    ChannelCredentialProfileTestResponse,
+    ChannelCredentialProfileUpdateRequest,
     ChannelDescriptor,
     ChannelId,
     ChannelsResponse,
     ConfigUpdateRequest,
     ContentCandidate,
+    CredentialProfileAuthMode,
+    CredentialProfileRole,
+    CredentialProfileStatus,
     DraftBundle,
     DraftVariant,
     IntegrationDescriptor,
@@ -102,6 +110,10 @@ class ChannelAccountNotFoundError(KeyError):
     pass
 
 
+class CredentialProfileNotFoundError(KeyError):
+    pass
+
+
 SUPPORTED_CHANNELS: tuple[ChannelId, ...] = (
     "x",
     "github",
@@ -131,6 +143,22 @@ PLANNED_PUBLISH_CHANNELS: tuple[ChannelId, ...] = ()
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _profile_role_to_account_role(role: CredentialProfileRole) -> Literal["primary", "supporting"]:
+    return "primary" if role == "primary_brand" else "supporting"
+
+
+def _account_role_to_profile_role(role: str) -> CredentialProfileRole:
+    return "primary_brand" if role == "primary" else "supporting_brand"
+
+
+def _default_auth_mode_for_channel(channel: ChannelId) -> str:
+    if channel in {"x", "blog"}:
+        return "none"
+    if channel in {"reddit", "linkedin"}:
+        return "oauth"
+    return "api_key"
 
 
 def _canonical_url(raw_url: str) -> str:
@@ -443,9 +471,18 @@ class BrandStudioService:
                     account_id=account_id,
                     channel=channel,
                     display_name=account_id.replace("-", " ").title(),
+                    identity_handle=target or None,
+                    auth_mode=_default_auth_mode_for_channel(channel),
                     target=(target or None),
                     enabled=True,
                     is_default=True,
+                    profile_status=self._profile_status_for_account(
+                        channel=channel,
+                        enabled=True,
+                        auth_mode=_default_auth_mode_for_channel(channel),
+                        identity_handle=target or None,
+                        auth_secret_set=False,
+                    ),
                     secret_status=self._secret_status_for_channel(channel),
                     capabilities=self._capabilities_for_channel(channel),
                 )
@@ -642,6 +679,33 @@ class BrandStudioService:
             return "configured" if (os.getenv("HASHNODE_TOKEN") or "").strip() else "missing"
         return "invalid"
 
+    def _profile_status_for_account(
+        self,
+        *,
+        channel: ChannelId,
+        enabled: bool,
+        auth_mode: CredentialProfileAuthMode,
+        identity_handle: str | None,
+        auth_secret_set: bool,
+    ) -> CredentialProfileStatus:
+        if not enabled:
+            return "disabled"
+        normalized_mode = auth_mode or _default_auth_mode_for_channel(channel)
+        normalized_handle = (identity_handle or "").strip()
+        if normalized_mode == "none":
+            return "configured"
+        if normalized_mode == "username_only":
+            return "configured" if normalized_handle else "incomplete"
+        if normalized_mode == "login_password":
+            return "configured" if normalized_handle and auth_secret_set else "incomplete"
+
+        secret_status = self._secret_status_for_channel(channel)
+        if secret_status == "invalid":
+            return "invalid"
+        if secret_status == "configured" or auth_secret_set:
+            return "configured"
+        return "incomplete"
+
     def _capabilities_for_channel(self, channel: ChannelId) -> list[str]:
         if channel in REAL_PUBLISH_CHANNELS:
             return ["publish_markdown", "queue"]
@@ -681,8 +745,20 @@ class BrandStudioService:
             secret_status = self._secret_status_for_channel(channel)
             capabilities = self._capabilities_for_channel(channel)
             for account_id, account in list(accounts.items()):
+                auth_mode = account.auth_mode or _default_auth_mode_for_channel(channel)
                 accounts[account_id] = account.model_copy(
-                    update={"secret_status": secret_status, "capabilities": capabilities}
+                    update={
+                        "auth_mode": auth_mode,
+                        "secret_status": secret_status,
+                        "profile_status": self._profile_status_for_account(
+                            channel=channel,
+                            enabled=account.enabled,
+                            auth_mode=auth_mode,
+                            identity_handle=account.identity_handle,
+                            auth_secret_set=account.auth_secret_set,
+                        ),
+                        "capabilities": capabilities,
+                    }
                 )
             self._mark_single_default(channel)
 
@@ -846,6 +922,25 @@ class BrandStudioService:
         with self._lock:
             account_id = f"{channel}-{uuid4().hex[:8]}"
             current = self._accounts.get(channel, {})
+            auth_mode = payload.auth_mode or _default_auth_mode_for_channel(channel)
+            identity_handle = payload.identity_handle or payload.target
+            normalized_display_name = payload.display_name.strip().lower()
+            normalized_identity_handle = (identity_handle or "").strip().lower()
+            normalized_target = (payload.target or "").strip().lower()
+
+            for existing in current.values():
+                if existing.role != payload.role:
+                    continue
+                if existing.display_name.strip().lower() != normalized_display_name:
+                    continue
+                if (existing.identity_handle or "").strip().lower() != normalized_identity_handle:
+                    continue
+                if (existing.target or "").strip().lower() != normalized_target:
+                    continue
+                if existing.auth_mode != auth_mode:
+                    continue
+                raise ValueError("account_duplicate")
+
             if payload.role == "supporting":
                 if not payload.supports_account_id:
                     raise ValueError("supporting_account_requires_supports_account_id")
@@ -854,15 +949,26 @@ class BrandStudioService:
                     raise ChannelAccountNotFoundError("supports_account_id_not_found")
                 if referenced.role != "primary":
                     raise ValueError("supports_account_id_must_reference_primary_account")
+            auth_secret_set = bool((payload.auth_secret or "").strip())
             created = ChannelAccount(
                 account_id=account_id,
                 channel=channel,
                 display_name=payload.display_name,
+                identity_handle=identity_handle,
+                auth_mode=auth_mode,
+                auth_secret_set=auth_secret_set,
                 target=payload.target,
                 enabled=payload.enabled,
                 is_default=payload.is_default or len(current) == 0,
                 role=payload.role,
                 supports_account_id=payload.supports_account_id,
+                profile_status=self._profile_status_for_account(
+                    channel=channel,
+                    enabled=payload.enabled,
+                    auth_mode=auth_mode,
+                    identity_handle=identity_handle,
+                    auth_secret_set=auth_secret_set,
+                ),
                 secret_status=self._secret_status_for_channel(channel),
                 capabilities=self._capabilities_for_channel(channel),
             )
@@ -900,8 +1006,21 @@ class BrandStudioService:
             account = current.get(account_id)
             if account is None:
                 raise ChannelAccountNotFoundError("account_not_found")
-            updates = payload.model_dump(exclude_none=True)
+            updates = payload.model_dump(exclude_none=True, exclude={"auth_secret"})
+            if payload.auth_secret is not None:
+                updates["auth_secret_set"] = bool(payload.auth_secret.strip())
             updated = account.model_copy(update=updates)
+            updated = updated.model_copy(
+                update={
+                    "profile_status": self._profile_status_for_account(
+                        channel=channel,
+                        enabled=updated.enabled,
+                        auth_mode=updated.auth_mode,
+                        identity_handle=updated.identity_handle,
+                        auth_secret_set=updated.auth_secret_set,
+                    )
+                }
+            )
             current[account_id] = updated
             self._mark_single_default(channel)
             self._persist_accounts_state()
@@ -1045,9 +1164,19 @@ class BrandStudioService:
                     message = f"Hugging Face test failed: {exc}"
 
             tested_at = _utcnow()
+            profile_status = self._profile_status_for_account(
+                channel=channel,
+                enabled=account.enabled,
+                auth_mode=account.auth_mode,
+                identity_handle=account.identity_handle,
+                auth_secret_set=account.auth_secret_set,
+            )
+            if account.enabled and status == "invalid":
+                profile_status = "invalid"
             current[account_id] = account.model_copy(
                 update={
                     "secret_status": status,
+                    "profile_status": profile_status,
                     "last_tested_at": tested_at,
                     "last_test_status": status,
                     "last_test_message": message,
@@ -1068,6 +1197,223 @@ class BrandStudioService:
                 tested_at=tested_at,
                 message=message,
             )
+
+    def _to_credential_profile(self, account: ChannelAccount) -> ChannelCredentialProfile:
+        return ChannelCredentialProfile(
+            profile_id=account.account_id,
+            channel=account.channel,
+            role=_account_role_to_profile_role(account.role),
+            identity_display_name=account.display_name,
+            identity_handle=account.identity_handle,
+            auth_mode=account.auth_mode,
+            target=account.target,
+            enabled=account.enabled,
+            is_default=account.is_default,
+            status=account.profile_status,
+            supports_profile_id=account.supports_account_id,
+            capabilities=account.capabilities,
+            last_tested_at=account.last_tested_at,
+            last_test_status=account.last_test_status,
+            last_test_message=account.last_test_message,
+            successful_publishes=account.successful_publishes,
+            failed_publishes=account.failed_publishes,
+            last_published_at=account.last_published_at,
+            last_publish_status=account.last_publish_status,
+            last_publish_message=account.last_publish_message,
+        )
+
+    def _find_account_by_profile_id(self, profile_id: str) -> tuple[ChannelId, ChannelAccount]:
+        for channel in SUPPORTED_CHANNELS:
+            item = self._accounts.get(channel, {}).get(profile_id)
+            if item is not None:
+                return channel, item
+        raise CredentialProfileNotFoundError("profile_not_found")
+
+    def credential_profiles(
+        self,
+        *,
+        channel: ChannelId | None = None,
+        role: CredentialProfileRole | None = None,
+        status_filter: CredentialProfileStatus | None = None,
+    ) -> ChannelCredentialProfilesResponse:
+        with self._lock:
+            self._refresh_account_runtime_fields()
+            items: list[ChannelCredentialProfile] = []
+            channels = [channel] if channel else list(SUPPORTED_CHANNELS)
+            for current_channel in channels:
+                for account in self._accounts.get(current_channel, {}).values():
+                    profile = self._to_credential_profile(account)
+                    if role and profile.role != role:
+                        continue
+                    if status_filter and profile.status != status_filter:
+                        continue
+                    items.append(profile)
+            items.sort(
+                key=lambda item: (
+                    item.channel,
+                    0 if item.role == "primary_brand" else 1,
+                    item.identity_display_name.lower(),
+                )
+            )
+            return ChannelCredentialProfilesResponse(count=len(items), items=items)
+
+    def create_credential_profile(
+        self,
+        payload: ChannelCredentialProfileCreateRequest,
+        *,
+        actor: str,
+    ) -> ChannelCredentialProfile:
+        created = self.create_channel_account(
+            payload.channel,
+            ChannelAccountCreateRequest(
+                display_name=payload.identity_display_name,
+                identity_handle=payload.identity_handle,
+                auth_mode=payload.auth_mode,
+                auth_secret=payload.auth_secret,
+                target=payload.target,
+                enabled=payload.enabled,
+                is_default=payload.is_default,
+                role=_profile_role_to_account_role(payload.role),
+                supports_account_id=payload.supports_profile_id,
+            ),
+            actor=actor,
+        )
+        return self._to_credential_profile(created)
+
+    def update_credential_profile(
+        self,
+        profile_id: str,
+        payload: ChannelCredentialProfileUpdateRequest,
+        *,
+        actor: str,
+    ) -> ChannelCredentialProfile:
+        with self._lock:
+            channel, account = self._find_account_by_profile_id(profile_id)
+            channel_accounts = self._accounts.get(channel, {})
+
+            role = _profile_role_to_account_role(payload.role) if payload.role else account.role
+            supports_account_id = (
+                account.supports_account_id
+                if payload.supports_profile_id is None
+                else payload.supports_profile_id
+            )
+            if role == "supporting":
+                if not supports_account_id:
+                    raise ValueError("supporting_account_requires_supports_account_id")
+                referenced = channel_accounts.get(supports_account_id)
+                if referenced is None:
+                    raise ChannelAccountNotFoundError("supports_account_id_not_found")
+                if referenced.role != "primary":
+                    raise ValueError("supports_account_id_must_reference_primary_account")
+            else:
+                supports_account_id = None
+
+            auth_secret_set = account.auth_secret_set
+            if payload.auth_secret is not None:
+                auth_secret_set = bool(payload.auth_secret.strip())
+
+            identity_display_name = payload.identity_display_name or account.display_name
+            identity_handle = (
+                account.identity_handle
+                if payload.identity_handle is None
+                else payload.identity_handle
+            )
+            auth_mode = payload.auth_mode or account.auth_mode
+            target = account.target if payload.target is None else payload.target
+            enabled = account.enabled if payload.enabled is None else payload.enabled
+            is_default = account.is_default if payload.is_default is None else payload.is_default
+
+            updated = account.model_copy(
+                update={
+                    "display_name": identity_display_name,
+                    "identity_handle": identity_handle,
+                    "auth_mode": auth_mode,
+                    "auth_secret_set": auth_secret_set,
+                    "target": target,
+                    "enabled": enabled,
+                    "is_default": is_default,
+                    "role": role,
+                    "supports_account_id": supports_account_id,
+                    "profile_status": self._profile_status_for_account(
+                        channel=channel,
+                        enabled=enabled,
+                        auth_mode=auth_mode,
+                        identity_handle=identity_handle,
+                        auth_secret_set=auth_secret_set,
+                    ),
+                }
+            )
+            channel_accounts[profile_id] = updated
+            self._mark_single_default(channel)
+            self._persist_accounts_state()
+            self._add_audit(
+                actor=actor,
+                action="credential_profile.update",
+                status="ok",
+                payload=f"{channel}:{profile_id}",
+            )
+            return self._to_credential_profile(channel_accounts[profile_id])
+
+    def delete_credential_profile(self, profile_id: str, *, actor: str) -> None:
+        with self._lock:
+            channel, _account = self._find_account_by_profile_id(profile_id)
+        self.delete_channel_account(channel, profile_id, actor=actor)
+
+    def activate_credential_profile(
+        self, profile_id: str, *, actor: str
+    ) -> ChannelCredentialProfile:
+        with self._lock:
+            channel, _account = self._find_account_by_profile_id(profile_id)
+            current = self._accounts.get(channel, {})
+            account = current.get(profile_id)
+            if account is None:
+                raise CredentialProfileNotFoundError("profile_not_found")
+
+            for candidate_id, candidate in list(current.items()):
+                enabled_value = candidate.enabled
+                if candidate_id == profile_id:
+                    enabled_value = True
+                current[candidate_id] = candidate.model_copy(
+                    update={
+                        "enabled": enabled_value,
+                        "is_default": candidate_id == profile_id,
+                    }
+                )
+            self._refresh_account_runtime_fields()
+            self._persist_accounts_state()
+
+            active = self._active_strategy()
+            defaults = dict(active.default_accounts)
+            defaults[channel] = profile_id
+            self._strategies[active.id] = active.model_copy(update={"default_accounts": defaults})
+            self._persist_runtime_state()
+            self._add_audit(
+                actor=actor,
+                action="account.activate",
+                status="ok",
+                payload=f"{channel}:{profile_id}",
+            )
+            return self._to_credential_profile(current[profile_id])
+
+    def test_credential_profile(
+        self,
+        profile_id: str,
+        *,
+        actor: str,
+    ) -> ChannelCredentialProfileTestResponse:
+        with self._lock:
+            channel, _account = self._find_account_by_profile_id(profile_id)
+        account_test = self.test_channel_account(channel, profile_id, actor=actor)
+        with self._lock:
+            refreshed = self._accounts[channel][profile_id]
+            profile_status = refreshed.profile_status
+        return ChannelCredentialProfileTestResponse(
+            profile_id=profile_id,
+            success=account_test.success,
+            status=profile_status,
+            tested_at=account_test.tested_at,
+            message=account_test.message,
+        )
 
     def _record_account_publish_result(
         self,

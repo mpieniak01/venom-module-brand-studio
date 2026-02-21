@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field
 
 PublishStatus = Literal["draft", "ready", "queued", "published", "failed", "cancelled"]
 AccountRole = Literal["primary", "supporting"]
+CredentialProfileRole = Literal["primary_brand", "supporting_brand"]
+CredentialProfileAuthMode = Literal["api_key", "oauth", "login_password", "username_only", "none"]
+CredentialProfileStatus = Literal["configured", "incomplete", "invalid", "disabled"]
 DiscoveryMode = Literal["stub", "hybrid", "live"]
 BrandChannel = Literal[
     "x",
@@ -259,6 +262,10 @@ class ChannelAccount(BaseModel):
     account_id: str
     channel: ChannelId
     display_name: str = Field(min_length=1)
+    identity_handle: str | None = None
+    auth_mode: CredentialProfileAuthMode = "api_key"
+    profile_status: CredentialProfileStatus = "incomplete"
+    auth_secret_set: bool = False
     target: str | None = None
     enabled: bool = True
     is_default: bool = False
@@ -278,6 +285,9 @@ class ChannelAccount(BaseModel):
 
 class ChannelAccountCreateRequest(BaseModel):
     display_name: str = Field(min_length=1)
+    identity_handle: str | None = None
+    auth_mode: CredentialProfileAuthMode = "api_key"
+    auth_secret: str | None = None
     target: str | None = None
     enabled: bool = True
     is_default: bool = False
@@ -287,6 +297,9 @@ class ChannelAccountCreateRequest(BaseModel):
 
 class ChannelAccountUpdateRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1)
+    identity_handle: str | None = None
+    auth_mode: CredentialProfileAuthMode | None = None
+    auth_secret: str | None = None
     target: str | None = None
     enabled: bool | None = None
     is_default: bool | None = None
@@ -316,6 +329,71 @@ class ChannelAccountTestResponse(BaseModel):
     account_id: str
     success: bool
     status: IntegrationStatus
+    tested_at: datetime
+    message: str
+
+
+class ChannelCredentialProfile(BaseModel):
+    profile_id: str
+    channel: ChannelId
+    role: CredentialProfileRole
+    identity_display_name: str = Field(min_length=1)
+    identity_handle: str | None = None
+    auth_mode: CredentialProfileAuthMode
+    target: str | None = None
+    enabled: bool = True
+    is_default: bool = False
+    status: CredentialProfileStatus
+    supports_profile_id: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    last_tested_at: datetime | None = None
+    last_test_status: IntegrationStatus | None = None
+    last_test_message: str | None = None
+    successful_publishes: int = 0
+    failed_publishes: int = 0
+    last_published_at: datetime | None = None
+    last_publish_status: Literal["published", "failed"] | None = None
+    last_publish_message: str | None = None
+
+
+class ChannelCredentialProfilesResponse(BaseModel):
+    count: int
+    items: list[ChannelCredentialProfile]
+
+
+class ChannelCredentialProfileResponse(BaseModel):
+    item: ChannelCredentialProfile
+
+
+class ChannelCredentialProfileCreateRequest(BaseModel):
+    channel: ChannelId
+    role: CredentialProfileRole = "primary_brand"
+    identity_display_name: str = Field(min_length=1)
+    identity_handle: str | None = None
+    auth_mode: CredentialProfileAuthMode = "api_key"
+    auth_secret: str | None = None
+    target: str | None = None
+    enabled: bool = True
+    is_default: bool = False
+    supports_profile_id: str | None = None
+
+
+class ChannelCredentialProfileUpdateRequest(BaseModel):
+    role: CredentialProfileRole | None = None
+    identity_display_name: str | None = Field(default=None, min_length=1)
+    identity_handle: str | None = None
+    auth_mode: CredentialProfileAuthMode | None = None
+    auth_secret: str | None = None
+    target: str | None = None
+    enabled: bool | None = None
+    is_default: bool | None = None
+    supports_profile_id: str | None = None
+
+
+class ChannelCredentialProfileTestResponse(BaseModel):
+    profile_id: str
+    success: bool
+    status: CredentialProfileStatus
     tested_at: datetime
     message: str
 

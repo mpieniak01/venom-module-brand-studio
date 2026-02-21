@@ -18,6 +18,7 @@ def isolated_runtime_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
     monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
     service_module._service = service_module.BrandStudioService()
 
 
@@ -299,8 +300,12 @@ def test_401_for_mutating_endpoint_without_actor_header() -> None:
     assert response.status_code == 401
 
     account_response = client.post(
-        "/api/v1/brand-studio/channels/devto/accounts",
-        json={"display_name": "No auth account"},
+        "/api/v1/brand-studio/credential-profiles",
+        json={
+            "channel": "devto",
+            "identity_display_name": "No auth profile",
+            "auth_mode": "api_key",
+        },
     )
     assert account_response.status_code == 401
 
@@ -323,8 +328,12 @@ def test_403_when_actor_not_in_allowlist(monkeypatch) -> None:
     assert response.status_code == 403
 
     account_response = client.post(
-        "/api/v1/brand-studio/channels/devto/accounts",
-        json={"display_name": "Blocked account"},
+        "/api/v1/brand-studio/credential-profiles",
+        json={
+            "channel": "devto",
+            "identity_display_name": "Blocked profile",
+            "auth_mode": "api_key",
+        },
         headers={"X-Authenticated-User": "blocked-user", "X-Autonomy-Level": "20"},
     )
     assert account_response.status_code == 403
@@ -333,8 +342,12 @@ def test_403_when_actor_not_in_allowlist(monkeypatch) -> None:
 def test_403_for_mutating_account_endpoint_when_autonomy_too_low() -> None:
     client = build_client()
     response = client.post(
-        "/api/v1/brand-studio/channels/devto/accounts",
-        json={"display_name": "Low autonomy account"},
+        "/api/v1/brand-studio/credential-profiles",
+        json={
+            "channel": "devto",
+            "identity_display_name": "Low autonomy profile",
+            "auth_mode": "api_key",
+        },
         headers={"X-Authenticated-User": "mpieniak", "X-Autonomy-Level": "5"},
     )
     assert response.status_code == 403
@@ -386,67 +399,86 @@ def test_config_and_strategies_endpoints_flow() -> None:
     assert delete.status_code == 204
 
 
-def test_integrations_endpoints() -> None:
+def test_credential_profiles_crud_flow() -> None:
     client = build_client()
 
-    list_response = client.get("/api/v1/brand-studio/integrations")
-    assert list_response.status_code == 200
-    items = list_response.json()["items"]
-    assert any(item["id"] == "github_publish" for item in items)
-
-    test_response = client.post(
-        "/api/v1/brand-studio/integrations/rss/test",
-        headers=AUTH_HEADERS,
-    )
-    assert test_response.status_code == 200
-    assert "status" in test_response.json()
-
-
-def test_channel_accounts_crud_flow() -> None:
-    client = build_client()
-
-    channels = client.get("/api/v1/brand-studio/channels")
-    assert channels.status_code == 200
-    assert any(item["id"] == "github" for item in channels.json()["items"])
+    listed_initial = client.get("/api/v1/brand-studio/credential-profiles")
+    assert listed_initial.status_code == 200
+    assert listed_initial.json()["count"] >= 1
 
     create = client.post(
-        "/api/v1/brand-studio/channels/devto/accounts",
-        json={"display_name": "Dev.to main", "target": "devto-user", "is_default": True},
+        "/api/v1/brand-studio/credential-profiles",
+        json={
+            "channel": "devto",
+            "identity_display_name": "Dev.to main",
+            "identity_handle": "devto-main",
+            "auth_mode": "api_key",
+            "target": "devto-user",
+            "is_default": True,
+            "role": "primary_brand",
+        },
         headers=AUTH_HEADERS,
     )
     assert create.status_code == 200
-    account_id = create.json()["item"]["account_id"]
+    profile_id = create.json()["item"]["profile_id"]
 
-    listed = client.get("/api/v1/brand-studio/channels/devto/accounts")
+    listed = client.get("/api/v1/brand-studio/credential-profiles", params={"channel": "devto"})
     assert listed.status_code == 200
-    assert any(item["account_id"] == account_id for item in listed.json()["items"])
+    assert any(item["profile_id"] == profile_id for item in listed.json()["items"])
 
     update = client.put(
-        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}",
-        json={"display_name": "Dev.to updated"},
+        f"/api/v1/brand-studio/credential-profiles/{profile_id}",
+        json={"identity_display_name": "Dev.to updated"},
         headers=AUTH_HEADERS,
     )
     assert update.status_code == 200
-    assert update.json()["item"]["display_name"] == "Dev.to updated"
+    assert update.json()["item"]["identity_display_name"] == "Dev.to updated"
 
     activate = client.post(
-        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}/activate",
+        f"/api/v1/brand-studio/credential-profiles/{profile_id}/activate",
         headers=AUTH_HEADERS,
     )
     assert activate.status_code == 200
+    assert activate.json()["item"]["is_default"] is True
 
     test_response = client.post(
-        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}/test",
+        f"/api/v1/brand-studio/credential-profiles/{profile_id}/test",
         headers=AUTH_HEADERS,
     )
     assert test_response.status_code == 200
-    assert test_response.json()["account_id"] == account_id
+    assert test_response.json()["profile_id"] == profile_id
 
     delete = client.delete(
-        f"/api/v1/brand-studio/channels/devto/accounts/{account_id}",
+        f"/api/v1/brand-studio/credential-profiles/{profile_id}",
         headers=AUTH_HEADERS,
     )
     assert delete.status_code == 204
+
+
+def test_credential_profiles_create_returns_409_for_duplicate() -> None:
+    client = build_client()
+    payload = {
+        "channel": "devto",
+        "identity_display_name": "Dev.to duplicate",
+        "identity_handle": "devto-dup",
+        "auth_mode": "api_key",
+        "target": "devto-user",
+        "role": "primary_brand",
+    }
+    first = client.post(
+        "/api/v1/brand-studio/credential-profiles",
+        json=payload,
+        headers=AUTH_HEADERS,
+    )
+    assert first.status_code == 200
+
+    duplicate = client.post(
+        "/api/v1/brand-studio/credential-profiles",
+        json=payload,
+        headers=AUTH_HEADERS,
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Duplicate credential profile"
 
 
 def test_monitoring_keywords_crud() -> None:
@@ -890,40 +922,46 @@ def test_link_draft_to_campaign() -> None:
     assert resp_camp_404.status_code == 404
 
 
-def test_create_channel_account_with_role_and_supports_account_id() -> None:
+def test_create_credential_profile_with_role_and_supports_profile_id() -> None:
     client = build_client()
 
-    # Create primary account
+    # Create primary profile
     primary_resp = client.post(
-        "/api/v1/brand-studio/channels/devto/accounts",
+        "/api/v1/brand-studio/credential-profiles",
         json={
-            "display_name": "Primary Devto",
+            "channel": "devto",
+            "identity_display_name": "Primary Devto",
+            "identity_handle": "devto-main",
             "target": "devto-main",
             "is_default": True,
-            "role": "primary",
+            "role": "primary_brand",
+            "auth_mode": "api_key",
         },
         headers=AUTH_HEADERS,
     )
     assert primary_resp.status_code == 200
-    primary_id = primary_resp.json()["item"]["account_id"]
-    assert primary_resp.json()["item"]["role"] == "primary"
-    assert primary_resp.json()["item"]["supports_account_id"] is None
+    primary_id = primary_resp.json()["item"]["profile_id"]
+    assert primary_resp.json()["item"]["role"] == "primary_brand"
+    assert primary_resp.json()["item"]["supports_profile_id"] is None
 
-    # Create supporting account
+    # Create supporting profile
     supporting_resp = client.post(
-        "/api/v1/brand-studio/channels/devto/accounts",
+        "/api/v1/brand-studio/credential-profiles",
         json={
-            "display_name": "Supporting Devto",
+            "channel": "devto",
+            "identity_display_name": "Supporting Devto",
+            "identity_handle": "devto-secondary",
             "target": "devto-secondary",
-            "role": "supporting",
-            "supports_account_id": primary_id,
+            "role": "supporting_brand",
+            "supports_profile_id": primary_id,
+            "auth_mode": "api_key",
         },
         headers=AUTH_HEADERS,
     )
     assert supporting_resp.status_code == 200
     supporting_item = supporting_resp.json()["item"]
-    assert supporting_item["role"] == "supporting"
-    assert supporting_item["supports_account_id"] == primary_id
+    assert supporting_item["role"] == "supporting_brand"
+    assert supporting_item["supports_profile_id"] == primary_id
 
 
 def test_queue_draft_with_scheduled_at_and_publish_mode() -> None:
