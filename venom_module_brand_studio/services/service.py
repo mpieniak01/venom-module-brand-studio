@@ -922,6 +922,25 @@ class BrandStudioService:
         with self._lock:
             account_id = f"{channel}-{uuid4().hex[:8]}"
             current = self._accounts.get(channel, {})
+            auth_mode = payload.auth_mode or _default_auth_mode_for_channel(channel)
+            identity_handle = payload.identity_handle or payload.target
+            normalized_display_name = payload.display_name.strip().lower()
+            normalized_identity_handle = (identity_handle or "").strip().lower()
+            normalized_target = (payload.target or "").strip().lower()
+
+            for existing in current.values():
+                if existing.role != payload.role:
+                    continue
+                if existing.display_name.strip().lower() != normalized_display_name:
+                    continue
+                if (existing.identity_handle or "").strip().lower() != normalized_identity_handle:
+                    continue
+                if (existing.target or "").strip().lower() != normalized_target:
+                    continue
+                if existing.auth_mode != auth_mode:
+                    continue
+                raise ValueError("account_duplicate")
+
             if payload.role == "supporting":
                 if not payload.supports_account_id:
                     raise ValueError("supporting_account_requires_supports_account_id")
@@ -930,8 +949,6 @@ class BrandStudioService:
                     raise ChannelAccountNotFoundError("supports_account_id_not_found")
                 if referenced.role != "primary":
                     raise ValueError("supports_account_id_must_reference_primary_account")
-            auth_mode = payload.auth_mode or _default_auth_mode_for_channel(channel)
-            identity_handle = payload.identity_handle or payload.target
             auth_secret_set = bool((payload.auth_secret or "").strip())
             created = ChannelAccount(
                 account_id=account_id,

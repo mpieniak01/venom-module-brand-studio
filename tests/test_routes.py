@@ -18,6 +18,7 @@ def isolated_runtime_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
     monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
     service_module._service = service_module.BrandStudioService()
 
 
@@ -452,6 +453,32 @@ def test_credential_profiles_crud_flow() -> None:
         headers=AUTH_HEADERS,
     )
     assert delete.status_code == 204
+
+
+def test_credential_profiles_create_returns_409_for_duplicate() -> None:
+    client = build_client()
+    payload = {
+        "channel": "devto",
+        "identity_display_name": "Dev.to duplicate",
+        "identity_handle": "devto-dup",
+        "auth_mode": "api_key",
+        "target": "devto-user",
+        "role": "primary_brand",
+    }
+    first = client.post(
+        "/api/v1/brand-studio/credential-profiles",
+        json=payload,
+        headers=AUTH_HEADERS,
+    )
+    assert first.status_code == 200
+
+    duplicate = client.post(
+        "/api/v1/brand-studio/credential-profiles",
+        json=payload,
+        headers=AUTH_HEADERS,
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Duplicate credential profile"
 
 
 def test_monitoring_keywords_crud() -> None:

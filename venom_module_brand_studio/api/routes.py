@@ -531,7 +531,10 @@ async def list_credential_profiles(
 @router.post(
     "/credential-profiles",
     response_model=ChannelCredentialProfileResponse,
-    responses={400: {"description": "Invalid credential profile payload"}},
+    responses={
+        400: {"description": "Invalid credential profile payload"},
+        409: {"description": "Duplicate credential profile"},
+    },
 )
 async def create_credential_profile(
     payload: ChannelCredentialProfileCreateRequest,
@@ -543,6 +546,11 @@ async def create_credential_profile(
     try:
         item = service.create_credential_profile(payload, actor=actor)
     except ValueError as exc:
+        if str(exc) == "account_duplicate":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Duplicate credential profile",
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),

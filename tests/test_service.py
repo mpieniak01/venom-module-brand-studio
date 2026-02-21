@@ -19,6 +19,14 @@ from venom_module_brand_studio.services.service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_module_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+
 def test_canonical_url_removes_tracking_params() -> None:
     url = _canonical_url(
         "https://example.org/post?utm_source=a&utm_medium=b&ref=r&id=1&gclid=foo"
