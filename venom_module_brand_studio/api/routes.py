@@ -277,6 +277,8 @@ async def queue_draft(
                 payload_override=payload.payload_override,
                 actor=actor,
                 campaign_id=payload.campaign_id,
+                scheduled_at=payload.scheduled_at,
+                publish_mode=payload.publish_mode,
             )
     except KeyError as exc:
         if str(exc).strip("'") in {"draft_not_found", "draft_variant_not_found"}:

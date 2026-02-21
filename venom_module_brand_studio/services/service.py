@@ -790,6 +790,14 @@ class BrandStudioService:
         with self._lock:
             account_id = f"{channel}-{uuid4().hex[:8]}"
             current = self._accounts.get(channel, {})
+            if payload.role == "supporting":
+                if not payload.supports_account_id:
+                    raise ValueError("supporting_account_requires_supports_account_id")
+                referenced = current.get(payload.supports_account_id)
+                if referenced is None:
+                    raise ChannelAccountNotFoundError("supports_account_id_not_found")
+                if referenced.role != "primary":
+                    raise ValueError("supports_account_id_must_reference_primary_account")
             created = ChannelAccount(
                 account_id=account_id,
                 channel=channel,
@@ -797,6 +805,8 @@ class BrandStudioService:
                 target=payload.target,
                 enabled=payload.enabled,
                 is_default=payload.is_default or len(current) == 0,
+                role=payload.role,
+                supports_account_id=payload.supports_account_id,
                 secret_status=self._secret_status_for_channel(channel),
                 capabilities=self._capabilities_for_channel(channel),
             )
@@ -1089,6 +1099,7 @@ class BrandStudioService:
         min_score: float | None,
     ) -> tuple[list[ContentCandidate], datetime]:
         self.refresh_candidates()
+        self.process_scheduled_queue()
         strategy = self._active_strategy()
         effective_min_score = strategy.min_score if min_score is None else min_score
         effective_limit = min(limit, strategy.limit)
@@ -1119,6 +1130,9 @@ class BrandStudioService:
 
         tone_suffix = f" ({tone})" if tone else ""
         variants: list[DraftVariant] = []
+
+        # Stage 1: generate primary content variants
+        primary_content: dict[str, str] = {}
         for channel in channels:
             for language in languages:
                 if language == "pl":
@@ -1131,7 +1145,46 @@ class BrandStudioService:
                         f"{candidate.topic}: {candidate.summary} "
                         f"My engineering perspective with practical takeaways.{tone_suffix}".strip()
                     )
+                primary_content[f"{channel}:{language}"] = content
                 variants.append(DraftVariant(channel=channel, language=language, content=content))
+
+        # Stage 2: generate supporting variants with attribution for supporting accounts
+        for channel in channels:
+            channel_accounts = self._accounts.get(channel, {})
+            primary_account: ChannelAccount | None = None
+            for acc in channel_accounts.values():
+                if acc.role == "primary" and acc.enabled:
+                    primary_account = acc
+                    break
+
+            for acc in channel_accounts.values():
+                if acc.role != "supporting" or not acc.enabled:
+                    continue
+                source_ref = (
+                    primary_account.display_name if primary_account else candidate.url
+                )
+                for language in languages:
+                    base = primary_content.get(f"{channel}:{language}", "")
+                    if language == "pl":
+                        teaser = (
+                            f"Cytując {source_ref}: {candidate.topic}. "
+                            f"Oryginalne źródło wiedzy: {candidate.url} | "
+                            f"{base}"
+                        ).strip()
+                    else:
+                        teaser = (
+                            f"Quoting {source_ref}: {candidate.topic}. "
+                            f"Original knowledge source: {candidate.url} | "
+                            f"{base}"
+                        ).strip()
+                    variants.append(
+                        DraftVariant(
+                            channel=channel,
+                            language=language,
+                            content=teaser,
+                            account_id=acc.account_id,
+                        )
+                    )
 
         draft_id = f"draft-{uuid4().hex[:10]}"
         bundle = DraftBundle(
@@ -1155,6 +1208,8 @@ class BrandStudioService:
         actor: str,
         account_id: str | None = None,
         campaign_id: str | None = None,
+        scheduled_at: datetime | None = None,
+        publish_mode: Literal["manual", "auto"] = "manual",
     ) -> PublishQueueItem:
         with self._lock:
             bundle = self._drafts.get(draft_id)
@@ -1162,7 +1217,10 @@ class BrandStudioService:
                 raise KeyError("draft_not_found")
 
             candidate_variant = self._choose_variant(
-                bundle=bundle, target_channel=target_channel, target_language=target_language
+                bundle=bundle,
+                target_channel=target_channel,
+                target_language=target_language,
+                account_id=account_id,
             )
             if candidate_variant is None:
                 raise KeyError("draft_variant_not_found")
@@ -1193,6 +1251,8 @@ class BrandStudioService:
                 created_at=now,
                 updated_at=now,
                 campaign_id=campaign_id,
+                scheduled_at=scheduled_at,
+                publish_mode=publish_mode,
             )
             self._queue[item.item_id] = item
             self._persist_runtime_state()
@@ -1234,13 +1294,22 @@ class BrandStudioService:
         bundle: DraftBundle,
         target_channel: str,
         target_language: str | None,
+        account_id: str | None = None,
     ) -> DraftVariant | None:
         variants = [v for v in bundle.variants if v.channel == target_channel]
         if target_language:
             lang_match = [v for v in variants if v.language == target_language]
             if lang_match:
-                return lang_match[0]
-        return variants[0] if variants else None
+                variants = lang_match
+        if not variants:
+            return None
+        if account_id:
+            account_match = [v for v in variants if v.account_id == account_id]
+            if account_match:
+                return account_match[0]
+        # Prefer primary variants (account_id is None) over supporting ones
+        primary_match = [v for v in variants if v.account_id is None]
+        return primary_match[0] if primary_match else variants[0]
 
     def publish_queue_item(
         self,
@@ -1839,12 +1908,37 @@ class BrandStudioService:
             )
 
     def queue_items(self, *, campaign_id: str | None = None) -> list[PublishQueueItem]:
+        self.process_scheduled_queue()
         with self._lock:
             items = list(self._queue.values())
             if campaign_id:
                 items = [it for it in items if it.campaign_id == campaign_id]
             items.sort(key=lambda it: it.created_at, reverse=True)
             return items
+
+    def process_scheduled_queue(self) -> int:
+        now = _utcnow()
+        with self._lock:
+            due_item_ids = [
+                item.item_id
+                for item in self._queue.values()
+                if item.status == "queued"
+                and item.publish_mode == "auto"
+                and item.scheduled_at is not None
+                and item.scheduled_at <= now
+            ]
+        processed = 0
+        for item_id in due_item_ids:
+            try:
+                self.publish_queue_item(
+                    item_id=item_id,
+                    confirm_publish=True,
+                    actor="system:scheduler",
+                )
+                processed += 1
+            except Exception as exc:
+                logger.warning("process_scheduled_queue: failed to publish %s: %s", item_id, exc)
+        return processed
 
     def audit_items(self) -> list[BrandStudioAuditEntry]:
         with self._lock:
@@ -2516,6 +2610,7 @@ class BrandStudioService:
             return list(self._scan_results)
 
     def monitoring_summary(self) -> BrandMonitoringSummary:
+        self.process_scheduled_queue()
         with self._lock:
             total_results = len(self._scan_results)
             owned_count = sum(1 for r in self._scan_results if r.maps_to_base_source)

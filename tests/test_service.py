@@ -717,3 +717,389 @@ def test_publish_additional_channels_with_connectors(
     )
     assert result.success is True
     assert result.status == "published"
+
+
+def test_channel_account_role_fields(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Primary Devto",
+            target="devto-main",
+            is_default=True,
+            role="primary",
+        ),
+        actor="tester",
+    )
+    assert primary.role == "primary"
+    assert primary.supports_account_id is None
+
+    supporting = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Devto",
+            target="devto-secondary",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+    assert supporting.role == "supporting"
+    assert supporting.supports_account_id == primary.account_id
+
+    listed = service.channel_accounts("devto")
+    roles = {acc.account_id: acc.role for acc in listed.items}
+    assert roles[primary.account_id] == "primary"
+    assert roles[supporting.account_id] == "supporting"
+
+
+def test_generate_draft_supporting_variant_attribution(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Primary Brand",
+            target="devto-main",
+            is_default=True,
+            role="primary",
+        ),
+        actor="tester",
+    )
+    service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Brand",
+            target="devto-secondary",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["pl", "en"],
+        tone=None,
+        actor="tester",
+    )
+    devto_variants = [v for v in draft.variants if v.channel == "devto"]
+    # 2 primary (pl, en) + 2 supporting (pl, en) = 4
+    assert len(devto_variants) == 4
+
+    supporting_pl = [v for v in devto_variants if "Cytując" in v.content]
+    supporting_en = [v for v in devto_variants if "Quoting" in v.content]
+    primary_variants = [
+        v for v in devto_variants if "Cytując" not in v.content and "Quoting" not in v.content
+    ]
+    assert len(supporting_pl) == 1
+    assert len(supporting_en) == 1
+    assert len(primary_variants) == 2
+    assert all("Oryginalne źródło wiedzy" in v.content for v in supporting_pl)
+    assert all("Original knowledge source" in v.content for v in supporting_en)
+
+
+def test_process_scheduled_queue_auto_publishes_due_items(monkeypatch, tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    from venom_module_brand_studio.services.service import _utcnow
+
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+    items, _ = service.list_candidates(channel=None, lang=None, limit=2, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone=None,
+        actor="tester",
+    )
+    past_time = _utcnow() - timedelta(minutes=5)
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="x",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        scheduled_at=past_time,
+        publish_mode="auto",
+    )
+    assert queue_item.publish_mode == "auto"
+    assert queue_item.scheduled_at == past_time
+
+    processed = service.process_scheduled_queue()
+    assert processed == 1
+
+    refreshed = service.queue_items()
+    assert refreshed[0].status == "published"
+
+
+def test_process_scheduled_queue_skips_future_and_manual_items(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from datetime import timedelta
+
+    from venom_module_brand_studio.services.service import _utcnow
+
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+    items, _ = service.list_candidates(channel=None, lang=None, limit=2, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone=None,
+        actor="tester",
+    )
+    future_time = _utcnow() + timedelta(hours=1)
+    service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="x",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        scheduled_at=future_time,
+        publish_mode="auto",
+    )
+    past_time = _utcnow() - timedelta(minutes=5)
+    draft2 = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone=None,
+        actor="tester",
+    )
+    service.queue_draft(
+        draft_id=draft2.draft_id,
+        target_channel="x",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        scheduled_at=past_time,
+        publish_mode="manual",
+    )
+
+    processed = service.process_scheduled_queue()
+    assert processed == 0
+
+
+def test_queue_draft_stores_scheduled_at_and_publish_mode(monkeypatch, tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    from venom_module_brand_studio.services.service import _utcnow
+
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone=None,
+        actor="tester",
+    )
+    scheduled = _utcnow() + timedelta(hours=2)
+    queue_item = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="x",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        scheduled_at=scheduled,
+        publish_mode="auto",
+    )
+    assert queue_item.scheduled_at == scheduled
+    assert queue_item.publish_mode == "auto"
+
+
+def test_create_supporting_account_validates_supports_account_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+
+    # Cannot create supporting account without supports_account_id
+    with pytest.raises(ValueError, match="supporting_account_requires_supports_account_id"):
+        service.create_channel_account(
+            "devto",
+            ChannelAccountCreateRequest(
+                display_name="Orphan Supporting",
+                role="supporting",
+            ),
+            actor="tester",
+        )
+
+    # Cannot create supporting account referencing a non-existent account
+    with pytest.raises(ChannelAccountNotFoundError):
+        service.create_channel_account(
+            "devto",
+            ChannelAccountCreateRequest(
+                display_name="Bad Supporting",
+                role="supporting",
+                supports_account_id="devto-nonexistent",
+            ),
+            actor="tester",
+        )
+
+    # Create a primary account first, then verify supporting can reference it
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(display_name="Primary Devto", role="primary"),
+        actor="tester",
+    )
+
+    # Cannot reference a supporting account as the primary target
+    supporting_first = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Devto",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+    with pytest.raises(ValueError, match="supports_account_id_must_reference_primary_account"):
+        service.create_channel_account(
+            "devto",
+            ChannelAccountCreateRequest(
+                display_name="Nested Supporting",
+                role="supporting",
+                supports_account_id=supporting_first.account_id,
+            ),
+            actor="tester",
+        )
+
+
+def test_queue_draft_supporting_variant_selection_with_multiple_accounts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Primary Brand",
+            target="devto-main",
+            is_default=True,
+            role="primary",
+        ),
+        actor="tester",
+    )
+    supporting_1 = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Brand 1",
+            target="devto-secondary-1",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+    supporting_2 = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Brand 2",
+            target="devto-secondary-2",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["pl"],
+        tone=None,
+        actor="tester",
+    )
+
+    # The variant for supporting_1 should contain "Supporting Brand 1" attribution
+    # The variant for supporting_2 should contain "Supporting Brand 2" attribution
+    devto_pl_variants = [
+        v for v in draft.variants if v.channel == "devto" and v.language == "pl"
+    ]
+    s1_variant = next(
+        (v for v in devto_pl_variants if v.account_id == supporting_1.account_id), None
+    )
+    s2_variant = next(
+        (v for v in devto_pl_variants if v.account_id == supporting_2.account_id), None
+    )
+    assert s1_variant is not None
+    assert s2_variant is not None
+    # Each supporting variant references the primary brand via attribution
+    assert "Cytując Primary Brand" in s1_variant.content
+
+    # Queueing with specific account_id selects the correct variant
+    queue_item_1 = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="devto",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=supporting_1.account_id,
+    )
+    queue_item_2 = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="devto",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=supporting_2.account_id,
+    )
+
+    assert queue_item_1.account_id == supporting_1.account_id
+    assert queue_item_2.account_id == supporting_2.account_id
+    # Each queue item should have the content from its supporting account's variant
+    assert queue_item_1.payload == s1_variant.content
+    assert queue_item_2.payload == s2_variant.content
