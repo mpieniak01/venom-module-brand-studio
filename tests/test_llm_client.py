@@ -70,3 +70,25 @@ def test_resolve_local_server_name_from_payload() -> None:
         )
         == "vllm"
     )
+
+
+def test_http_client_is_reused_and_recreated_after_close() -> None:
+    client = _build_client()
+    first = client._get_client()
+    second = client._get_client()
+    assert first is second
+    client.close()
+    third = client._get_client()
+    assert third is not first
+    client.close()
+
+
+def test_from_env_clamps_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_TEMPERATURE", "9.9")
+    hot = BrandStudioLLMClient.from_env()
+    assert hot.config.temperature == 2.0
+
+    monkeypatch.setenv("BRAND_STUDIO_LLM_TEMPERATURE", "-3")
+    cold = BrandStudioLLMClient.from_env()
+    assert cold.config.temperature == 0.0

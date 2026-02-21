@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -78,6 +79,14 @@ def _draft_cache_ttl_seconds() -> int:
         return max(60, int(raw)) if raw else 86400
     except ValueError:
         return 86400
+
+
+def _draft_llm_parallel_workers() -> int:
+    raw = (os.getenv("BRAND_STUDIO_LLM_PARALLEL_WORKERS") or "").strip()
+    try:
+        return min(16, max(1, int(raw))) if raw else 4
+    except ValueError:
+        return 4
 
 
 class StrategyNotFoundError(KeyError):
@@ -1195,6 +1204,7 @@ class BrandStudioService:
         variants: list[DraftVariant] = []
 
         # Stage 1: generate primary content variants
+        primary_jobs: list[tuple[str, str, str, str]] = []
         primary_content: dict[str, str] = {}
         for channel in channels:
             for language in languages:
@@ -1204,23 +1214,29 @@ class BrandStudioService:
                     language=language,
                     tone=tone,
                 )
-                content = self._generate_draft_text_with_llm_fallback(
-                    prompt=self._build_primary_prompt(
-                        candidate_topic=candidate.topic,
-                        candidate_summary=candidate.summary,
-                        candidate_url=candidate.url,
-                        channel=channel,
-                        language=language,
-                        tone=tone,
-                    ),
-                    fallback=fallback,
-                    actor=actor,
-                    audit_context=f"primary:{channel}:{language}",
+                prompt = self._build_primary_prompt(
+                    candidate_topic=candidate.topic,
+                    candidate_summary=candidate.summary,
+                    candidate_url=candidate.url,
+                    channel=channel,
+                    language=language,
+                    tone=tone,
                 )
-                primary_content[f"{channel}:{language}"] = content
+                audit_context = f"primary:{channel}:{language}"
+                primary_jobs.append((f"{channel}:{language}", prompt, fallback, audit_context))
+
+        primary_content = self._generate_many_draft_texts_with_llm_fallback(
+            jobs=primary_jobs,
+            actor=actor,
+        )
+
+        for channel in channels:
+            for language in languages:
+                content = primary_content[f"{channel}:{language}"]
                 variants.append(DraftVariant(channel=channel, language=language, content=content))
 
         # Stage 2: generate supporting variants with attribution for supporting accounts
+        supporting_jobs: list[tuple[str, str, str, str]] = []
         for channel in channels:
             channel_accounts = self._accounts.get(channel, {})
             primary_account: ChannelAccount | None = None
@@ -1244,21 +1260,34 @@ class BrandStudioService:
                         primary_content=base,
                         language=language,
                     )
-                    teaser = self._generate_draft_text_with_llm_fallback(
-                        prompt=self._build_supporting_prompt(
-                            source_ref=source_ref,
-                            candidate_topic=candidate.topic,
-                            candidate_summary=candidate.summary,
-                            candidate_url=candidate.url,
-                            primary_content=base,
-                            channel=channel,
-                            language=language,
-                            tone=tone,
-                        ),
-                        fallback=fallback,
-                        actor=actor,
-                        audit_context=f"supporting:{channel}:{language}:{acc.account_id}",
+                    prompt = self._build_supporting_prompt(
+                        source_ref=source_ref,
+                        candidate_topic=candidate.topic,
+                        candidate_summary=candidate.summary,
+                        candidate_url=candidate.url,
+                        primary_content=base,
+                        channel=channel,
+                        language=language,
+                        tone=tone,
                     )
+                    audit_context = f"supporting:{channel}:{language}:{acc.account_id}"
+                    job_key = f"{channel}:{language}:{acc.account_id}"
+                    supporting_jobs.append((job_key, prompt, fallback, audit_context))
+
+        supporting_content = self._generate_many_draft_texts_with_llm_fallback(
+            jobs=supporting_jobs,
+            actor=actor,
+        )
+
+        for channel in channels:
+            for acc in self._accounts.get(channel, {}).values():
+                if acc.role != "supporting" or not acc.enabled:
+                    continue
+                for language in languages:
+                    job_key = f"{channel}:{language}:{acc.account_id}"
+                    teaser = supporting_content.get(job_key)
+                    if teaser is None:
+                        continue
                     teaser = self._ensure_supporting_attribution(
                         text=teaser, language=language, candidate_url=candidate.url
                     )
@@ -1419,6 +1448,7 @@ class BrandStudioService:
         language: str,
         tone: str | None,
     ) -> str:
+        shortened_primary = self._truncate_for_supporting_prompt(primary_content)
         if language == "pl":
             return (
                 "Role: supporting\n"
@@ -1430,7 +1460,7 @@ class BrandStudioService:
                 f"Temat: {candidate_topic}\n"
                 f"Streszczenie: {candidate_summary}\n"
                 f"Oryginalny wpis URL: {candidate_url}\n"
-                f"Kontekst głównego wpisu: {primary_content}\n"
+                f"Kontekst głównego wpisu: {shortened_primary}\n"
                 "Wymagania: max 2-3 zdania, musi zawierać zwrot 'Oryginalne źródło wiedzy: <URL>'."
             )
         return (
@@ -1443,9 +1473,64 @@ class BrandStudioService:
             f"Topic: {candidate_topic}\n"
             f"Summary: {candidate_summary}\n"
             f"Original post URL: {candidate_url}\n"
-            f"Primary post context: {primary_content}\n"
+            f"Primary post context: {shortened_primary}\n"
             "Requirements: max 2-3 sentences, include 'Original knowledge source: <URL>'."
         )
+
+    def _truncate_for_supporting_prompt(self, text: str) -> str:
+        limit = 1000
+        trimmed = text.strip()
+        if len(trimmed) <= limit:
+            return trimmed
+        return f"{trimmed[:limit].rstrip()}..."
+
+    def _generate_many_draft_texts_with_llm_fallback(
+        self,
+        *,
+        jobs: list[tuple[str, str, str, str]],
+        actor: str,
+    ) -> dict[str, str]:
+        if not jobs:
+            return {}
+        if not self._llm_client.enabled:
+            return {job_key: fallback for job_key, _prompt, fallback, _ctx in jobs}
+
+        if len(jobs) == 1:
+            job_key, prompt, fallback, audit_context = jobs[0]
+            content = self._generate_draft_text_with_llm_fallback(
+                prompt=prompt,
+                fallback=fallback,
+                actor=actor,
+                audit_context=audit_context,
+            )
+            return {job_key: content}
+
+        workers = min(_draft_llm_parallel_workers(), len(jobs))
+        resolved: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_job = {
+                executor.submit(self._llm_client.generate_text, prompt): (
+                    job_key,
+                    fallback,
+                    audit_context,
+                )
+                for job_key, prompt, fallback, audit_context in jobs
+            }
+            for future in as_completed(future_to_job):
+                job_key, fallback, audit_context = future_to_job[future]
+                try:
+                    resolved[job_key] = future.result()
+                except Exception as exc:
+                    logger.warning("Brand Studio LLM fallback (%s): %s", audit_context, exc)
+                    self._add_audit(
+                        actor=actor,
+                        action="draft.generate.llm",
+                        status="fallback",
+                        payload=f"{audit_context}:{exc}",
+                    )
+                    resolved[job_key] = fallback
+
+        return resolved
 
     def _generate_draft_text_with_llm_fallback(
         self,
@@ -1472,13 +1557,18 @@ class BrandStudioService:
     def _ensure_supporting_attribution(
         self, *, text: str, language: str, candidate_url: str
     ) -> str:
+        normalized = text.lower()
+        normalized_url = candidate_url.lower()
+        has_url = normalized_url in normalized
         if language == "pl":
-            if "Oryginalne źródło wiedzy:" in text:
+            has_phrase = "oryginalne źródło wiedzy" in normalized
+            if has_phrase and has_url:
                 return text
-            return f"{text}\n\nOryginalne źródło wiedzy: {candidate_url}".strip()
-        if "Original knowledge source:" in text:
+            return f"{text.rstrip()}\n\nOryginalne źródło wiedzy: {candidate_url}"
+        has_phrase = "original knowledge source" in normalized
+        if has_phrase and has_url:
             return text
-        return f"{text}\n\nOriginal knowledge source: {candidate_url}".strip()
+        return f"{text.rstrip()}\n\nOriginal knowledge source: {candidate_url}"
 
     def queue_draft(
         self,

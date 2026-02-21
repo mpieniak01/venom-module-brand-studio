@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from threading import Lock
 
 import httpx
 
@@ -51,6 +52,8 @@ class BrandStudioLLMConfig:
 class BrandStudioLLMClient:
     def __init__(self, config: BrandStudioLLMConfig) -> None:
         self.config = config
+        self._client_lock = Lock()
+        self._client: httpx.Client | None = None
 
     @property
     def enabled(self) -> bool:
@@ -69,13 +72,34 @@ class BrandStudioLLMClient:
                     1.0, _env_float("BRAND_STUDIO_LLM_TIMEOUT_SECONDS", default=25.0)
                 ),
                 max_tokens=max(64, _env_int("BRAND_STUDIO_LLM_MAX_TOKENS", default=800)),
-                temperature=_env_float("BRAND_STUDIO_LLM_TEMPERATURE", default=0.3),
+                temperature=max(
+                    0.0,
+                    min(2.0, _env_float("BRAND_STUDIO_LLM_TEMPERATURE", default=0.3)),
+                ),
                 auto_start_local_server=_env_flag(
                     "BRAND_STUDIO_LLM_AUTO_START_LOCAL_SERVER",
                     default=True,
                 ),
             )
         )
+
+    def _get_client(self) -> httpx.Client:
+        with self._client_lock:
+            if self._client is None:
+                self._client = httpx.Client(timeout=self.config.timeout_seconds)
+            return self._client
+
+    def close(self) -> None:
+        with self._client_lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+
+    def __del__(self) -> None:  # pragma: no cover
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def generate_text(
         self,
@@ -112,27 +136,30 @@ class BrandStudioLLMClient:
         chunks: list[str] = []
         current_event = ""
         try:
-            with httpx.Client(timeout=self.config.timeout_seconds) as client:
-                with client.stream("POST", url, json=payload) as response:
-                    response.raise_for_status()
-                    for raw_line in response.iter_lines():
-                        if not raw_line:
+            client = self._get_client()
+            with client.stream("POST", url, json=payload) as response:
+                response.raise_for_status()
+                for raw_line in response.iter_lines():
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
+                    if line.startswith("event:"):
+                        current_event = line.split(":", 1)[1].strip()
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line.split(":", 1)[1].strip()
+                    if current_event == "content":
+                        if not data:
                             continue
-                        line = raw_line.strip()
-                        if line.startswith("event:"):
-                            current_event = line.split(":", 1)[1].strip()
-                            continue
-                        if not line.startswith("data:"):
-                            continue
-                        data = line.split(":", 1)[1].strip()
-                        if current_event == "content":
-                            packet = json.loads(data)
-                            text = packet.get("text")
-                            if isinstance(text, str) and text:
-                                chunks.append(text)
-                            continue
-                        if current_event == "error":
-                            error_msg = "llm_stream_error"
+                        packet = json.loads(data)
+                        text = packet.get("text")
+                        if isinstance(text, str) and text:
+                            chunks.append(text)
+                        continue
+                    if current_event == "error":
+                        error_msg = "llm_stream_error"
+                        if data:
                             try:
                                 packet = json.loads(data)
                                 if isinstance(packet, dict):
@@ -141,9 +168,9 @@ class BrandStudioLLMClient:
                                         error_msg = candidate
                             except Exception:
                                 pass
-                            raise LLMGenerationError(error_msg)
-                        if current_event == "done":
-                            break
+                        raise LLMGenerationError(error_msg)
+                    if current_event == "done":
+                        break
         except httpx.HTTPError as exc:
             raise LLMGenerationError(f"llm_http_error:{exc}") from exc
         except json.JSONDecodeError as exc:
@@ -167,16 +194,17 @@ class BrandStudioLLMClient:
         base = self.config.core_base_url.rstrip("/")
         active_url = f"{base}/api/v1/system/llm-servers/active"
         try:
-            with httpx.Client(timeout=min(self.config.timeout_seconds, 10.0)) as client:
-                active = client.get(active_url)
-                active.raise_for_status()
-                payload = active.json() if active.content else {}
-                server_name = self._resolve_local_server_name(payload)
-                if server_name not in {"ollama", "vllm"}:
-                    return False
-                start_url = f"{base}/api/v1/system/llm-servers/{server_name}/start"
-                start_resp = client.post(start_url)
-                return start_resp.status_code < 400
+            timeout = min(self.config.timeout_seconds, 10.0)
+            client = self._get_client()
+            active = client.get(active_url, timeout=timeout)
+            active.raise_for_status()
+            payload = active.json() if active.content else {}
+            server_name = self._resolve_local_server_name(payload)
+            if server_name not in {"ollama", "vllm"}:
+                return False
+            start_url = f"{base}/api/v1/system/llm-servers/{server_name}/start"
+            start_resp = client.post(start_url, timeout=timeout)
+            return start_resp.status_code < 400
         except Exception:
             return False
 

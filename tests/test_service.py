@@ -810,6 +810,48 @@ def test_generate_draft_supporting_variant_attribution(monkeypatch, tmp_path: Pa
     assert all("Original knowledge source" in v.content for v in supporting_en)
 
 
+def test_ensure_supporting_attribution_is_case_insensitive_and_checks_url(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    service = BrandStudioService()
+
+    url = "https://example.org/source"
+    base = "teaser\n\noriginal knowledge source: https://example.org/source"
+    unchanged = service._ensure_supporting_attribution(
+        text=base, language="en", candidate_url=url
+    )
+    assert unchanged == base
+
+    wrong_url_text = "teaser\n\noriginal knowledge source: https://example.org/other"
+    fixed = service._ensure_supporting_attribution(
+        text=wrong_url_text, language="en", candidate_url=url
+    )
+    assert fixed.endswith(f"Original knowledge source: {url}")
+
+
+def test_build_supporting_prompt_truncates_primary_content(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    service = BrandStudioService()
+    long_primary = "A" * 2000
+    prompt = service._build_supporting_prompt(
+        source_ref="Brand",
+        candidate_topic="Topic",
+        candidate_summary="Summary",
+        candidate_url="https://example.org",
+        primary_content=long_primary,
+        channel="devto",
+        language="en",
+        tone=None,
+    )
+    assert "Primary post context: " in prompt
+    assert "A" * 1200 not in prompt
+
+
 def test_generate_draft_uses_llm_when_enabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
