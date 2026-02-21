@@ -158,6 +158,17 @@ type CredentialProfileTestResponse = {
   message: string;
 };
 
+type CredentialProfileEditDraft = {
+  role: CredentialProfileRole;
+  identity_display_name: string;
+  identity_handle: string;
+  auth_mode: CredentialProfileAuthMode;
+  target: string;
+  auth_secret: string;
+  enabled: boolean;
+  supports_profile_id: string;
+};
+
 type KeywordType = "brand_core" | "brand_product" | "brand_person" | "risk_term" | "competitor_context";
 type SearchResultClass = "owned_source" | "brand_mention_positive" | "brand_mention_neutral" | "brand_mention_risk" | "unrelated";
 type CampaignStatus = "draft" | "ready" | "running" | "completed" | "failed" | "cancelled";
@@ -523,6 +534,10 @@ export default function BrandStudioPage() {
   const [newProfileTarget, setNewProfileTarget] = useState("");
   const [newProfileSecret, setNewProfileSecret] = useState("");
   const [newProfileSupportsId, setNewProfileSupportsId] = useState("");
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [editingProfileDraft, setEditingProfileDraft] = useState<CredentialProfileEditDraft | null>(
+    null
+  );
 
   const [monitoringSummary, setMonitoringSummary] = useState<BrandMonitoringSummary | null>(null);
   const [monitoringResults, setMonitoringResults] = useState<BrandSearchResult[]>([]);
@@ -948,6 +963,22 @@ export default function BrandStudioPage() {
     );
   }, [credentialProfiles, newProfileChannel]);
 
+  const editingSupportingCandidates = useMemo(() => {
+    if (!editingProfileDraft || !editingProfileId) {
+      return [] as CredentialProfile[];
+    }
+    const editing = credentialProfiles.find((item) => item.profile_id === editingProfileId);
+    if (!editing) {
+      return [] as CredentialProfile[];
+    }
+    return credentialProfiles.filter(
+      (item) =>
+        item.channel === editing.channel &&
+        item.role === "primary_brand" &&
+        item.profile_id !== editing.profile_id
+    );
+  }, [credentialProfiles, editingProfileDraft, editingProfileId]);
+
   const generateDraft = useCallback(async () => {
     if (!selectedCandidateId) {
       return;
@@ -1262,6 +1293,87 @@ export default function BrandStudioPage() {
     },
     [loadAudit, loadCandidates, loadConfig]
   );
+
+  const startEditCredentialProfile = useCallback((profile: CredentialProfile) => {
+    setEditingProfileId(profile.profile_id);
+    setEditingProfileDraft({
+      role: profile.role,
+      identity_display_name: profile.identity_display_name,
+      identity_handle: profile.identity_handle ?? "",
+      auth_mode: profile.auth_mode,
+      target: profile.target ?? "",
+      auth_secret: "",
+      enabled: profile.enabled,
+      supports_profile_id: profile.supports_profile_id ?? "",
+    });
+    setIntegrationError(null);
+  }, []);
+
+  const cancelEditCredentialProfile = useCallback(() => {
+    setEditingProfileId(null);
+    setEditingProfileDraft(null);
+  }, []);
+
+  const saveCredentialProfileEdit = useCallback(async () => {
+    if (!editingProfileId || !editingProfileDraft) {
+      return;
+    }
+    const displayName = editingProfileDraft.identity_display_name.trim();
+    if (!displayName) {
+      setIntegrationError(t("accounts.validationName"));
+      return;
+    }
+    if (
+      editingProfileDraft.role === "supporting_brand" &&
+      !editingProfileDraft.supports_profile_id
+    ) {
+      setIntegrationError(
+        lang === "pl"
+          ? "Wybierz profil główny do wsparcia."
+          : "Select a primary profile to support."
+      );
+      return;
+    }
+
+    setIntegrationLoading(true);
+    setIntegrationError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/brand-studio/credential-profiles/${editingProfileId}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Authenticated-User": "local-user",
+          },
+          body: JSON.stringify({
+            role: editingProfileDraft.role,
+            identity_display_name: displayName,
+            identity_handle: editingProfileDraft.identity_handle.trim() || null,
+            auth_mode: editingProfileDraft.auth_mode,
+            auth_secret: editingProfileDraft.auth_secret.trim() || null,
+            target: editingProfileDraft.target.trim() || null,
+            enabled: editingProfileDraft.enabled,
+            supports_profile_id:
+              editingProfileDraft.role === "supporting_brand"
+                ? editingProfileDraft.supports_profile_id || null
+                : null,
+          }),
+        }
+      );
+      if (!response.ok) {
+        throw new Error(await extractErrorMessage(response));
+      }
+      await loadCredentialProfiles();
+      await loadAudit();
+      setEditingProfileId(null);
+      setEditingProfileDraft(null);
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : "unknown_error");
+    } finally {
+      setIntegrationLoading(false);
+    }
+  }, [editingProfileDraft, editingProfileId, lang, loadAudit, loadCredentialProfiles, t]);
 
   const createCredentialProfile = useCallback(async () => {
     const displayName = newProfileName.trim();
@@ -2548,6 +2660,20 @@ export default function BrandStudioPage() {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        onClick={() =>
+                          editingProfileId === profile.profile_id
+                            ? cancelEditCredentialProfile()
+                            : startEditCredentialProfile(profile)
+                        }
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-zinc-600/70 px-2 py-1 text-[11px] text-zinc-200 disabled:opacity-50"
+                      >
+                        {editingProfileId === profile.profile_id
+                          ? (lang === "pl" ? "Zamknij" : "Close")
+                          : (lang === "pl" ? "Edytuj" : "Edit")}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void activateCredentialProfile(profile.profile_id)}
                         disabled={integrationLoading}
                         className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
@@ -2577,6 +2703,161 @@ export default function BrandStudioPage() {
                       </span>
                     </div>
                   </div>
+                  {editingProfileId === profile.profile_id && editingProfileDraft ? (
+                    <div className="mt-2 rounded-xl border border-zinc-800/80 p-3">
+                      <div className="grid gap-2 md:grid-cols-3">
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Rola" : "Role"}
+                          </span>
+                          <select
+                            value={editingProfileDraft.role}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? {
+                                      ...previous,
+                                      role: event.target.value as CredentialProfileRole,
+                                      supports_profile_id:
+                                        event.target.value === "supporting_brand"
+                                          ? previous.supports_profile_id
+                                          : "",
+                                    }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            <option value="primary_brand">primary_brand</option>
+                            <option value="supporting_brand">supporting_brand</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">{t("accounts.displayName")}</span>
+                          <input
+                            value={editingProfileDraft.identity_display_name}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? { ...previous, identity_display_name: event.target.value }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Login / handle" : "Login / handle"}
+                          </span>
+                          <input
+                            value={editingProfileDraft.identity_handle}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous ? { ...previous, identity_handle: event.target.value } : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Auth" : "Auth"}
+                          </span>
+                          <select
+                            value={editingProfileDraft.auth_mode}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? {
+                                      ...previous,
+                                      auth_mode: event.target.value as CredentialProfileAuthMode,
+                                    }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            <option value="api_key">api_key</option>
+                            <option value="oauth">oauth</option>
+                            <option value="login_password">login_password</option>
+                            <option value="username_only">username_only</option>
+                            <option value="none">none</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">{t("accounts.target")}</span>
+                          <input
+                            value={editingProfileDraft.target}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous ? { ...previous, target: event.target.value } : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Nowy sekret" : "New secret"}
+                          </span>
+                          <input
+                            type="password"
+                            value={editingProfileDraft.auth_secret}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous ? { ...previous, auth_secret: event.target.value } : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          />
+                        </label>
+                      </div>
+                      {editingProfileDraft.role === "supporting_brand" ? (
+                        <label className="mt-2 block space-y-1">
+                          <span className="text-[11px] uppercase text-zinc-500">
+                            {lang === "pl" ? "Profil główny" : "Primary profile"}
+                          </span>
+                          <select
+                            value={editingProfileDraft.supports_profile_id}
+                            onChange={(event) =>
+                              setEditingProfileDraft((previous) =>
+                                previous
+                                  ? { ...previous, supports_profile_id: event.target.value }
+                                  : previous
+                              )
+                            }
+                            className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                          >
+                            <option value="">{lang === "pl" ? "Wybierz profil" : "Select profile"}</option>
+                            {editingSupportingCandidates.map((item) => (
+                              <option key={item.profile_id} value={item.profile_id}>
+                                {item.identity_display_name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void saveCredentialProfileEdit()}
+                          disabled={integrationLoading}
+                          className="rounded-lg border border-emerald-500/40 px-3 py-1 text-xs text-emerald-100 disabled:opacity-50"
+                        >
+                          {lang === "pl" ? "Zapisz" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => cancelEditCredentialProfile()}
+                          disabled={integrationLoading}
+                          className="rounded-lg border border-zinc-600/70 px-3 py-1 text-xs text-zinc-200 disabled:opacity-50"
+                        >
+                          {lang === "pl" ? "Anuluj" : "Cancel"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </article>
               ))}
             </div>
