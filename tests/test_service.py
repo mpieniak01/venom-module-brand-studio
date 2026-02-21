@@ -810,6 +810,213 @@ def test_generate_draft_supporting_variant_attribution(monkeypatch, tmp_path: Pa
     assert all("Original knowledge source" in v.content for v in supporting_en)
 
 
+def test_ensure_supporting_attribution_is_case_insensitive_and_checks_url(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    service = BrandStudioService()
+
+    url = "https://example.org/source"
+    base = "teaser\n\noriginal knowledge source: https://example.org/source"
+    unchanged = service._ensure_supporting_attribution(
+        text=base, language="en", candidate_url=url
+    )
+    assert unchanged == base
+
+    wrong_url_text = "teaser\n\noriginal knowledge source: https://example.org/other"
+    fixed = service._ensure_supporting_attribution(
+        text=wrong_url_text, language="en", candidate_url=url
+    )
+    assert fixed.endswith(f"Original knowledge source: {url}")
+
+
+def test_build_supporting_prompt_truncates_primary_content(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    service = BrandStudioService()
+    long_primary = "A" * 2000
+    prompt = service._build_supporting_prompt(
+        source_ref="Brand",
+        candidate_topic="Topic",
+        candidate_summary="Summary",
+        candidate_url="https://example.org",
+        primary_content=long_primary,
+        channel="devto",
+        language="en",
+        tone=None,
+    )
+    assert "Primary post context: " in prompt
+    assert "A" * 1200 not in prompt
+
+
+def test_generate_draft_uses_llm_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Primary Brand",
+            target="devto-main",
+            is_default=True,
+            role="primary",
+        ),
+        actor="tester",
+    )
+    service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Brand",
+            target="devto-secondary",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+
+    class FakeLLMClient:
+        enabled = True
+
+        def generate_text(self, prompt: str, **_kwargs) -> str:
+            if "Role: supporting" in prompt:
+                return "Krótki teaser wspierający."
+            return "Pełny post ekspercki z LLM."
+
+    service._llm_client = FakeLLMClient()  # type: ignore[assignment]
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    assert len(draft.variants) == 2
+    primary_variant = next(v for v in draft.variants if v.account_id is None)
+    supporting_variant = next(v for v in draft.variants if v.account_id is not None)
+    assert primary_variant.content == "Pełny post ekspercki z LLM."
+    assert "Krótki teaser wspierający." in supporting_variant.content
+    assert "Oryginalne źródło wiedzy:" in supporting_variant.content
+
+
+def test_generate_draft_llm_error_falls_back_and_adds_audit(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+
+    class FailingLLMClient:
+        enabled = True
+
+        def generate_text(self, _prompt: str, **_kwargs) -> str:
+            raise RuntimeError("llm unavailable")
+
+    service._llm_client = FailingLLMClient()  # type: ignore[assignment]
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    assert len(draft.variants) == 1
+    assert "Moja perspektywa inżynierska i praktyczne wnioski." in draft.variants[0].content
+    audit = service.audit_items()
+    assert any(
+        entry.action == "draft.generate.llm" and entry.status == "fallback" for entry in audit
+    )
+
+
+def test_generate_draft_returns_cached_bundle_by_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS", "3600")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+    calls = {"count": 0}
+
+    class FakeLLMClient:
+        enabled = True
+
+        def generate_text(self, _prompt: str, **_kwargs) -> str:
+            calls["count"] += 1
+            return f"LLM output #{calls['count']}"
+
+    service._llm_client = FakeLLMClient()  # type: ignore[assignment]
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    first = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    second = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    assert first.draft_id == second.draft_id
+    assert first.variants[0].content == second.variants[0].content
+    assert calls["count"] == 1
+
+
+def test_generate_draft_refresh_true_creates_new_version(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS", "3600")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+    calls = {"count": 0}
+
+    class FakeLLMClient:
+        enabled = True
+
+        def generate_text(self, _prompt: str, **_kwargs) -> str:
+            calls["count"] += 1
+            return f"LLM output #{calls['count']}"
+
+    service._llm_client = FakeLLMClient()  # type: ignore[assignment]
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    first = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    second = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+        refresh=True,
+    )
+    assert first.draft_id != second.draft_id
+    assert calls["count"] == 2
+
+
 def test_process_scheduled_queue_auto_publishes_due_items(monkeypatch, tmp_path: Path) -> None:
     from datetime import timedelta
 

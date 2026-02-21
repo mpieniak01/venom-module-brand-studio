@@ -242,6 +242,7 @@ async def generate_draft(
             tone=payload.tone,
             actor=actor,
             campaign_id=payload.campaign_id,
+            refresh=payload.refresh,
         )
     except KeyError as exc:
         if str(exc).strip("'") == "candidate_not_found":

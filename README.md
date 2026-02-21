@@ -71,6 +71,13 @@ In `/home/ubuntu/venom/.env`:
 API_OPTIONAL_MODULES=manifest:/home/ubuntu/venom/modules/venom-module-brand-studio/module.json
 FEATURE_BRAND_STUDIO=true
 NEXT_PUBLIC_FEATURE_BRAND_STUDIO=true
+BRAND_STUDIO_LLM_ENABLED=false
+BRAND_STUDIO_LLM_CORE_BASE_URL=http://127.0.0.1:8000
+BRAND_STUDIO_LLM_TIMEOUT_SECONDS=25
+BRAND_STUDIO_LLM_MAX_TOKENS=800
+BRAND_STUDIO_LLM_TEMPERATURE=0.3
+BRAND_STUDIO_LLM_AUTO_START_LOCAL_SERVER=true
+BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS=86400
 FEATURE_BRAND_STUDIO_MONITORING=true
 BRAND_STUDIO_ALLOWED_USERS=
 BRAND_STUDIO_DISCOVERY_MODE=hybrid
@@ -119,6 +126,13 @@ After changing env values, restart Venom services.
 1. Queue and audit are persisted in `BRAND_STUDIO_STATE_FILE`.
 2. After backend restart, queue and audit entries are restored from local state file.
 3. Channel accounts and account telemetry are persisted in `BRAND_STUDIO_ACCOUNTS_FILE`.
+4. Draft bundles and draft-generation cache are persisted in `BRAND_STUDIO_STATE_FILE`.
+
+### Draft generation cache (LLM stability)
+1. Repeated `POST /drafts/generate` with the same input returns cached draft by default.
+2. Cached draft is stable (content does not change between page refreshes) until TTL expires.
+3. Use `refresh=true` in `DraftGenerateRequest` to force new draft generation.
+4. TTL is controlled by `BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS` (default: 86400s).
 
 ### Brand monitoring schedule (161_G)
 1. Monitoring API can be disabled independently via `FEATURE_BRAND_STUDIO_MONITORING=false`.

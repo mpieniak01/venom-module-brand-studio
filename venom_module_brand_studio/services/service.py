@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -67,8 +68,25 @@ from venom_module_brand_studio.connectors.sources import (
     fetch_hn_items,
     fetch_rss_items,
 )
+from venom_module_brand_studio.services.llm_client import BrandStudioLLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _draft_cache_ttl_seconds() -> int:
+    raw = (os.getenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS") or "").strip()
+    try:
+        return max(60, int(raw)) if raw else 86400
+    except ValueError:
+        return 86400
+
+
+def _draft_llm_parallel_workers() -> int:
+    raw = (os.getenv("BRAND_STUDIO_LLM_PARALLEL_WORKERS") or "").strip()
+    try:
+        return min(16, max(1, int(raw))) if raw else 4
+    except ValueError:
+        return 4
 
 
 class StrategyNotFoundError(KeyError):
@@ -321,6 +339,7 @@ class BrandStudioService:
         self._candidates: list[ContentCandidate] = []
         self._last_refresh_at: datetime = datetime.fromtimestamp(0, tz=UTC)
         self._drafts: dict[str, DraftBundle] = {}
+        self._draft_cache: dict[str, tuple[str, datetime]] = {}
         self._queue: dict[str, PublishQueueItem] = {}
         self._audit: list[BrandStudioAuditEntry] = []
         self._publisher = GitHubPublisher.from_env()
@@ -348,6 +367,7 @@ class BrandStudioService:
         self._monitoring_request_id_to_scan: dict[str, str] = {}
         self._campaign_run_request_ids: set[str] = set()
         self._google_cse = GoogleCSEConnector.from_env()
+        self._llm_client = BrandStudioLLMClient.from_env()
         self._init_default_strategy()
         self._init_default_accounts()
         self._load_candidates_cache()
@@ -498,6 +518,8 @@ class BrandStudioService:
             payload = json.loads(self._state_file.read_text(encoding="utf-8"))
             queue_raw = payload.get("queue")
             audit_raw = payload.get("audit")
+            drafts_raw = payload.get("drafts")
+            draft_cache_raw = payload.get("draft_cache")
             strategies_raw = payload.get("strategies")
             active_strategy_id = payload.get("active_strategy_id")
             integration_raw = payload.get("integration_tests")
@@ -516,6 +538,32 @@ class BrandStudioService:
                     if isinstance(item, dict):
                         loaded_audit.append(BrandStudioAuditEntry.model_validate(item))
                 self._audit = loaded_audit
+
+            if isinstance(drafts_raw, list):
+                loaded_drafts: dict[str, DraftBundle] = {}
+                for item in drafts_raw:
+                    if isinstance(item, dict):
+                        draft = DraftBundle.model_validate(item)
+                        loaded_drafts[draft.draft_id] = draft
+                self._drafts = loaded_drafts
+
+            if isinstance(draft_cache_raw, dict):
+                loaded_cache: dict[str, tuple[str, datetime]] = {}
+                for key, value in draft_cache_raw.items():
+                    if not isinstance(key, str) or not isinstance(value, dict):
+                        continue
+                    draft_id = value.get("draft_id")
+                    generated_at_raw = value.get("generated_at")
+                    if not isinstance(draft_id, str) or not isinstance(generated_at_raw, str):
+                        continue
+                    try:
+                        generated_at = datetime.fromisoformat(generated_at_raw)
+                        if generated_at.tzinfo is None:
+                            generated_at = generated_at.replace(tzinfo=UTC)
+                        loaded_cache[key] = (draft_id, generated_at)
+                    except Exception:
+                        continue
+                self._draft_cache = loaded_cache
 
             if isinstance(strategies_raw, list):
                 loaded_strategies: dict[str, StrategyConfig] = {}
@@ -538,6 +586,7 @@ class BrandStudioService:
                         except Exception:
                             pass
                 self._last_integration_test = loaded
+            self._cleanup_draft_cache()
         except Exception as exc:
             logger.warning("Brand Studio runtime state load failed: %s", exc)
             return
@@ -546,6 +595,11 @@ class BrandStudioService:
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
             payload = {
+                "drafts": [item.model_dump(mode="json") for item in self._drafts.values()],
+                "draft_cache": {
+                    key: {"draft_id": draft_id, "generated_at": generated_at.isoformat()}
+                    for key, (draft_id, generated_at) in self._draft_cache.items()
+                },
                 "queue": [item.model_dump(mode="json") for item in self._queue.values()],
                 "audit": [item.model_dump(mode="json") for item in self._audit],
                 "strategies": [item.model_dump(mode="json") for item in self._strategies.values()],
@@ -1123,32 +1177,66 @@ class BrandStudioService:
         tone: str | None,
         actor: str,
         campaign_id: str | None = None,
+        refresh: bool = False,
     ) -> DraftBundle:
         candidate = next((it for it in self._candidates if it.id == candidate_id), None)
         if candidate is None:
             raise KeyError("candidate_not_found")
 
-        tone_suffix = f" ({tone})" if tone else ""
+        cache_key = self._draft_cache_key(
+            candidate_id=candidate_id,
+            channels=channels,
+            languages=languages,
+            tone=tone,
+            campaign_id=campaign_id,
+        )
+        if not refresh:
+            cached = self._get_cached_draft(cache_key)
+            if cached is not None:
+                self._add_audit(
+                    actor=actor,
+                    action="draft.generate",
+                    status="cached",
+                    payload=cached.draft_id,
+                )
+                return cached
+
         variants: list[DraftVariant] = []
 
         # Stage 1: generate primary content variants
+        primary_jobs: list[tuple[str, str, str, str]] = []
         primary_content: dict[str, str] = {}
         for channel in channels:
             for language in languages:
-                if language == "pl":
-                    content = (
-                        f"{candidate.topic}: {candidate.summary} "
-                        f"Moja perspektywa inżynierska i praktyczne wnioski.{tone_suffix}".strip()
-                    )
-                else:
-                    content = (
-                        f"{candidate.topic}: {candidate.summary} "
-                        f"My engineering perspective with practical takeaways.{tone_suffix}".strip()
-                    )
-                primary_content[f"{channel}:{language}"] = content
+                fallback = self._fallback_primary_content(
+                    candidate_topic=candidate.topic,
+                    candidate_summary=candidate.summary,
+                    language=language,
+                    tone=tone,
+                )
+                prompt = self._build_primary_prompt(
+                    candidate_topic=candidate.topic,
+                    candidate_summary=candidate.summary,
+                    candidate_url=candidate.url,
+                    channel=channel,
+                    language=language,
+                    tone=tone,
+                )
+                audit_context = f"primary:{channel}:{language}"
+                primary_jobs.append((f"{channel}:{language}", prompt, fallback, audit_context))
+
+        primary_content = self._generate_many_draft_texts_with_llm_fallback(
+            jobs=primary_jobs,
+            actor=actor,
+        )
+
+        for channel in channels:
+            for language in languages:
+                content = primary_content[f"{channel}:{language}"]
                 variants.append(DraftVariant(channel=channel, language=language, content=content))
 
         # Stage 2: generate supporting variants with attribution for supporting accounts
+        supporting_jobs: list[tuple[str, str, str, str]] = []
         for channel in channels:
             channel_accounts = self._accounts.get(channel, {})
             primary_account: ChannelAccount | None = None
@@ -1165,18 +1253,44 @@ class BrandStudioService:
                 )
                 for language in languages:
                     base = primary_content.get(f"{channel}:{language}", "")
-                    if language == "pl":
-                        teaser = (
-                            f"Cytując {source_ref}: {candidate.topic}. "
-                            f"Oryginalne źródło wiedzy: {candidate.url} | "
-                            f"{base}"
-                        ).strip()
-                    else:
-                        teaser = (
-                            f"Quoting {source_ref}: {candidate.topic}. "
-                            f"Original knowledge source: {candidate.url} | "
-                            f"{base}"
-                        ).strip()
+                    fallback = self._fallback_supporting_content(
+                        source_ref=source_ref,
+                        candidate_topic=candidate.topic,
+                        candidate_url=candidate.url,
+                        primary_content=base,
+                        language=language,
+                    )
+                    prompt = self._build_supporting_prompt(
+                        source_ref=source_ref,
+                        candidate_topic=candidate.topic,
+                        candidate_summary=candidate.summary,
+                        candidate_url=candidate.url,
+                        primary_content=base,
+                        channel=channel,
+                        language=language,
+                        tone=tone,
+                    )
+                    audit_context = f"supporting:{channel}:{language}:{acc.account_id}"
+                    job_key = f"{channel}:{language}:{acc.account_id}"
+                    supporting_jobs.append((job_key, prompt, fallback, audit_context))
+
+        supporting_content = self._generate_many_draft_texts_with_llm_fallback(
+            jobs=supporting_jobs,
+            actor=actor,
+        )
+
+        for channel in channels:
+            for acc in self._accounts.get(channel, {}).values():
+                if acc.role != "supporting" or not acc.enabled:
+                    continue
+                for language in languages:
+                    job_key = f"{channel}:{language}:{acc.account_id}"
+                    teaser = supporting_content.get(job_key)
+                    if teaser is None:
+                        continue
+                    teaser = self._ensure_supporting_attribution(
+                        text=teaser, language=language, candidate_url=candidate.url
+                    )
                     variants.append(
                         DraftVariant(
                             channel=channel,
@@ -1191,9 +1305,270 @@ class BrandStudioService:
             draft_id=draft_id, candidate_id=candidate_id, variants=variants, campaign_id=campaign_id
         )
         self._drafts[draft_id] = bundle
+        self._draft_cache[cache_key] = (draft_id, _utcnow())
+        self._cleanup_draft_cache()
+        self._persist_runtime_state()
         audit_payload = f"{draft_id}:campaign={campaign_id}" if campaign_id else draft_id
         self._add_audit(actor=actor, action="draft.generate", status="ok", payload=audit_payload)
         return bundle
+
+    def _draft_cache_key(
+        self,
+        *,
+        candidate_id: str,
+        channels: list[str],
+        languages: list[str],
+        tone: str | None,
+        campaign_id: str | None,
+    ) -> str:
+        return json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "channels": channels,
+                "languages": languages,
+                "tone": tone or "",
+                "campaign_id": campaign_id or "",
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _get_cached_draft(self, cache_key: str) -> DraftBundle | None:
+        cached = self._draft_cache.get(cache_key)
+        if cached is None:
+            return None
+        draft_id, generated_at = cached
+        age_seconds = (_utcnow() - generated_at).total_seconds()
+        if age_seconds > _draft_cache_ttl_seconds():
+            self._draft_cache.pop(cache_key, None)
+            return None
+        bundle = self._drafts.get(draft_id)
+        if bundle is None:
+            self._draft_cache.pop(cache_key, None)
+            return None
+        return bundle
+
+    def _cleanup_draft_cache(self) -> None:
+        now = _utcnow()
+        ttl = _draft_cache_ttl_seconds()
+        for cache_key, (draft_id, generated_at) in list(self._draft_cache.items()):
+            if draft_id not in self._drafts:
+                self._draft_cache.pop(cache_key, None)
+                continue
+            if (now - generated_at).total_seconds() > ttl:
+                self._draft_cache.pop(cache_key, None)
+
+    def _fallback_primary_content(
+        self,
+        *,
+        candidate_topic: str,
+        candidate_summary: str,
+        language: str,
+        tone: str | None,
+    ) -> str:
+        tone_suffix = f" ({tone})" if tone else ""
+        if language == "pl":
+            return (
+                f"{candidate_topic}: {candidate_summary} "
+                f"Moja perspektywa inżynierska i praktyczne wnioski.{tone_suffix}".strip()
+            )
+        return (
+            f"{candidate_topic}: {candidate_summary} "
+            f"My engineering perspective with practical takeaways.{tone_suffix}".strip()
+        )
+
+    def _fallback_supporting_content(
+        self,
+        *,
+        source_ref: str,
+        candidate_topic: str,
+        candidate_url: str,
+        primary_content: str,
+        language: str,
+    ) -> str:
+        if language == "pl":
+            return (
+                f"Cytując {source_ref}: {candidate_topic}. "
+                f"Oryginalne źródło wiedzy: {candidate_url} | "
+                f"{primary_content}"
+            ).strip()
+        return (
+            f"Quoting {source_ref}: {candidate_topic}. "
+            f"Original knowledge source: {candidate_url} | "
+            f"{primary_content}"
+        ).strip()
+
+    def _build_primary_prompt(
+        self,
+        *,
+        candidate_topic: str,
+        candidate_summary: str,
+        candidate_url: str,
+        channel: str,
+        language: str,
+        tone: str | None,
+    ) -> str:
+        if language == "pl":
+            return (
+                "Role: primary\n"
+                "Jesteś ekspertem budującym markę osobistą inżyniera AI.\n"
+                "Napisz merytoryczny post ekspercki do publikacji.\n"
+                f"Kanał: {channel}\n"
+                f"Język: {language}\n"
+                f"Ton: {tone or 'expert'}\n"
+                f"Temat: {candidate_topic}\n"
+                f"Streszczenie: {candidate_summary}\n"
+                f"Źródło: {candidate_url}\n"
+                "Wymagania: 1) konkret i praktyczne wnioski, 2) naturalny styl, "
+                "3) bez nagłówków markdown i bez list numerowanych."
+            )
+        return (
+            "Role: primary\n"
+            "You are an AI engineering expert building a personal brand.\n"
+            "Write a full expert post ready for publication.\n"
+            f"Channel: {channel}\n"
+            f"Language: {language}\n"
+            f"Tone: {tone or 'expert'}\n"
+            f"Topic: {candidate_topic}\n"
+            f"Summary: {candidate_summary}\n"
+            f"Source: {candidate_url}\n"
+            "Requirements: 1) practical insight, 2) professional engaging tone, "
+            "3) no markdown headers and no numbered lists."
+        )
+
+    def _build_supporting_prompt(
+        self,
+        *,
+        source_ref: str,
+        candidate_topic: str,
+        candidate_summary: str,
+        candidate_url: str,
+        primary_content: str,
+        channel: str,
+        language: str,
+        tone: str | None,
+    ) -> str:
+        shortened_primary = self._truncate_for_supporting_prompt(primary_content)
+        if language == "pl":
+            return (
+                "Role: supporting\n"
+                "Napisz teaser/cytat promujący główny wpis.\n"
+                f"Kanał: {channel}\n"
+                f"Język: {language}\n"
+                f"Ton: {tone or 'short'}\n"
+                f"Marka źródłowa: {source_ref}\n"
+                f"Temat: {candidate_topic}\n"
+                f"Streszczenie: {candidate_summary}\n"
+                f"Oryginalny wpis URL: {candidate_url}\n"
+                f"Kontekst głównego wpisu: {shortened_primary}\n"
+                "Wymagania: max 2-3 zdania, musi zawierać zwrot 'Oryginalne źródło wiedzy: <URL>'."
+            )
+        return (
+            "Role: supporting\n"
+            "Write a short teaser/quote that redirects traffic to the primary post.\n"
+            f"Channel: {channel}\n"
+            f"Language: {language}\n"
+            f"Tone: {tone or 'short'}\n"
+            f"Primary source brand: {source_ref}\n"
+            f"Topic: {candidate_topic}\n"
+            f"Summary: {candidate_summary}\n"
+            f"Original post URL: {candidate_url}\n"
+            f"Primary post context: {shortened_primary}\n"
+            "Requirements: max 2-3 sentences, include 'Original knowledge source: <URL>'."
+        )
+
+    def _truncate_for_supporting_prompt(self, text: str) -> str:
+        limit = 1000
+        trimmed = text.strip()
+        if len(trimmed) <= limit:
+            return trimmed
+        return f"{trimmed[:limit].rstrip()}..."
+
+    def _generate_many_draft_texts_with_llm_fallback(
+        self,
+        *,
+        jobs: list[tuple[str, str, str, str]],
+        actor: str,
+    ) -> dict[str, str]:
+        if not jobs:
+            return {}
+        if not self._llm_client.enabled:
+            return {job_key: fallback for job_key, _prompt, fallback, _ctx in jobs}
+
+        if len(jobs) == 1:
+            job_key, prompt, fallback, audit_context = jobs[0]
+            content = self._generate_draft_text_with_llm_fallback(
+                prompt=prompt,
+                fallback=fallback,
+                actor=actor,
+                audit_context=audit_context,
+            )
+            return {job_key: content}
+
+        workers = min(_draft_llm_parallel_workers(), len(jobs))
+        resolved: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_job = {
+                executor.submit(self._llm_client.generate_text, prompt): (
+                    job_key,
+                    fallback,
+                    audit_context,
+                )
+                for job_key, prompt, fallback, audit_context in jobs
+            }
+            for future in as_completed(future_to_job):
+                job_key, fallback, audit_context = future_to_job[future]
+                try:
+                    resolved[job_key] = future.result()
+                except Exception as exc:
+                    logger.warning("Brand Studio LLM fallback (%s): %s", audit_context, exc)
+                    self._add_audit(
+                        actor=actor,
+                        action="draft.generate.llm",
+                        status="fallback",
+                        payload=f"{audit_context}:{exc}",
+                    )
+                    resolved[job_key] = fallback
+
+        return resolved
+
+    def _generate_draft_text_with_llm_fallback(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        actor: str,
+        audit_context: str,
+    ) -> str:
+        if not self._llm_client.enabled:
+            return fallback
+        try:
+            return self._llm_client.generate_text(prompt)
+        except Exception as exc:
+            logger.warning("Brand Studio LLM fallback (%s): %s", audit_context, exc)
+            self._add_audit(
+                actor=actor,
+                action="draft.generate.llm",
+                status="fallback",
+                payload=f"{audit_context}:{exc}",
+            )
+            return fallback
+
+    def _ensure_supporting_attribution(
+        self, *, text: str, language: str, candidate_url: str
+    ) -> str:
+        normalized = text.lower()
+        normalized_url = candidate_url.lower()
+        has_url = normalized_url in normalized
+        if language == "pl":
+            has_phrase = "oryginalne źródło wiedzy" in normalized
+            if has_phrase and has_url:
+                return text
+            return f"{text.rstrip()}\n\nOryginalne źródło wiedzy: {candidate_url}"
+        has_phrase = "original knowledge source" in normalized
+        if has_phrase and has_url:
+            return text
+        return f"{text.rstrip()}\n\nOriginal knowledge source: {candidate_url}"
 
     def queue_draft(
         self,
