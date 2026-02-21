@@ -45,7 +45,9 @@ from venom_module_brand_studio.api.schemas import (
     ChannelsResponse,
     ConfigUpdateRequest,
     ContentCandidate,
+    CredentialProfileAuthMode,
     CredentialProfileRole,
+    CredentialProfileStatus,
     DraftBundle,
     DraftVariant,
     IntegrationDescriptor,
@@ -682,10 +684,10 @@ class BrandStudioService:
         *,
         channel: ChannelId,
         enabled: bool,
-        auth_mode: str,
+        auth_mode: CredentialProfileAuthMode,
         identity_handle: str | None,
         auth_secret_set: bool,
-    ) -> str:
+    ) -> CredentialProfileStatus:
         if not enabled:
             return "disabled"
         normalized_mode = auth_mode or _default_auth_mode_for_channel(channel)
@@ -1215,7 +1217,7 @@ class BrandStudioService:
         *,
         channel: ChannelId | None = None,
         role: CredentialProfileRole | None = None,
-        status_filter: str | None = None,
+        status_filter: CredentialProfileStatus | None = None,
     ) -> ChannelCredentialProfilesResponse:
         with self._lock:
             self._refresh_account_runtime_fields()
@@ -1258,12 +1260,6 @@ class BrandStudioService:
                 supports_account_id=payload.supports_profile_id,
             ),
             actor=actor,
-        )
-        self._add_audit(
-            actor=actor,
-            action="credential_profile.create",
-            status="ok",
-            payload=f"{created.channel}:{created.account_id}",
         )
         return self._to_credential_profile(created)
 
@@ -1345,32 +1341,42 @@ class BrandStudioService:
         with self._lock:
             channel, _account = self._find_account_by_profile_id(profile_id)
         self.delete_channel_account(channel, profile_id, actor=actor)
-        self._add_audit(
-            actor=actor,
-            action="credential_profile.delete",
-            status="ok",
-            payload=f"{channel}:{profile_id}",
-        )
 
     def activate_credential_profile(
         self, profile_id: str, *, actor: str
     ) -> ChannelCredentialProfile:
         with self._lock:
             channel, _account = self._find_account_by_profile_id(profile_id)
-        self.update_channel_account(
-            channel,
-            profile_id,
-            ChannelAccountUpdateRequest(enabled=True),
-            actor=actor,
-        )
-        activated = self.activate_channel_account(channel, profile_id, actor=actor)
-        self._add_audit(
-            actor=actor,
-            action="credential_profile.activate",
-            status="ok",
-            payload=f"{channel}:{profile_id}",
-        )
-        return self._to_credential_profile(activated)
+            current = self._accounts.get(channel, {})
+            account = current.get(profile_id)
+            if account is None:
+                raise CredentialProfileNotFoundError("profile_not_found")
+
+            for candidate_id, candidate in list(current.items()):
+                enabled_value = candidate.enabled
+                if candidate_id == profile_id:
+                    enabled_value = True
+                current[candidate_id] = candidate.model_copy(
+                    update={
+                        "enabled": enabled_value,
+                        "is_default": candidate_id == profile_id,
+                    }
+                )
+            self._refresh_account_runtime_fields()
+            self._persist_accounts_state()
+
+            active = self._active_strategy()
+            defaults = dict(active.default_accounts)
+            defaults[channel] = profile_id
+            self._strategies[active.id] = active.model_copy(update={"default_accounts": defaults})
+            self._persist_runtime_state()
+            self._add_audit(
+                actor=actor,
+                action="account.activate",
+                status="ok",
+                payload=f"{channel}:{profile_id}",
+            )
+            return self._to_credential_profile(current[profile_id])
 
     def test_credential_profile(
         self,

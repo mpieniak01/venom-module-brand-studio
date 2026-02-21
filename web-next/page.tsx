@@ -1269,6 +1269,12 @@ export default function BrandStudioPage() {
       setIntegrationError(t("accounts.validationName"));
       return;
     }
+    if (newProfileRole === "supporting_brand" && !newProfileSupportsId) {
+      setIntegrationError(
+        lang === "pl" ? "Wybierz profil główny do wsparcia." : "Select a primary profile to support."
+      );
+      return;
+    }
     setIntegrationLoading(true);
     setIntegrationError(null);
     try {
@@ -1287,8 +1293,6 @@ export default function BrandStudioPage() {
           auth_secret: newProfileSecret.trim() || null,
           target: newProfileTarget.trim() || null,
           enabled: true,
-          is_default:
-            !credentialProfiles.some((item) => item.channel === newProfileChannel && item.enabled),
           supports_profile_id:
             newProfileRole === "supporting_brand" ? newProfileSupportsId || null : null,
         }),
@@ -1296,14 +1300,12 @@ export default function BrandStudioPage() {
       if (!response.ok) {
         throw new Error(await extractErrorMessage(response));
       }
-      const created = (await response.json()) as CredentialProfileResponse;
+      await response.json() as CredentialProfileResponse;
       setNewProfileName("");
       setNewProfileHandle("");
       setNewProfileTarget("");
       setNewProfileSecret("");
-      if (created.item.role === "supporting_brand") {
-        setNewProfileSupportsId("");
-      }
+      setNewProfileSupportsId("");
       await loadCredentialProfiles();
       await loadAudit();
     } catch (err) {
@@ -1312,7 +1314,7 @@ export default function BrandStudioPage() {
       setIntegrationLoading(false);
     }
   }, [
-    credentialProfiles,
+    lang,
     loadAudit,
     loadCredentialProfiles,
     newProfileAuthMode,
@@ -2447,16 +2449,16 @@ export default function BrandStudioPage() {
                   </select>
                 </label>
               ) : null}
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={() => void createCredentialProfile()}
-                  disabled={integrationLoading}
-                  className="w-full rounded-lg border border-emerald-500/40 px-3 py-2 text-xs text-emerald-100 disabled:opacity-50"
-                >
-                  {t("accounts.add")}
-                </button>
-              </div>
+            </div>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => void createCredentialProfile()}
+                disabled={integrationLoading}
+                className="rounded-lg border border-emerald-500/40 px-4 py-2 text-xs text-emerald-100 disabled:opacity-50"
+              >
+                {t("accounts.add")}
+              </button>
             </div>
             {integrationLoading ? <p className="text-zinc-400">{t("integrations.loading")}</p> : null}
             {integrationError ? <p className="text-rose-300">{integrationError}</p> : null}
@@ -2521,64 +2523,60 @@ export default function BrandStudioPage() {
             {!integrationLoading && !filteredProfiles.length ? (
               <p className="text-sm text-zinc-400">{t("accounts.empty")}</p>
             ) : null}
-            <div className="max-h-[920px] space-y-2 overflow-y-auto pr-1">
+            <div className="max-h-[920px] divide-y divide-zinc-800/70 overflow-y-auto pr-1">
               {filteredProfiles.map((profile) => (
-                <article key={profile.profile_id} className="rounded-xl border border-zinc-800 p-3">
+                <article key={profile.profile_id} className="py-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm text-zinc-100">
+                    <p className="min-w-0 flex-1 truncate text-sm text-zinc-100">
                       <span className="font-semibold uppercase">{profile.channel}</span>{" "}
-                      {profile.identity_display_name}
+                      {profile.identity_display_name}{" "}
+                      <span className="text-xs text-zinc-400">
+                        {profile.role} | {profile.auth_mode}
+                        {profile.identity_handle ? ` | ${profile.identity_handle}` : ""}
+                        {profile.target ? ` | ${profile.target}` : ""}
+                        {` | ok=${profile.successful_publishes}/fail=${profile.failed_publishes}`}
+                        {integrationTests[profile.profile_id]
+                          ? ` | ${integrationTests[profile.profile_id]}`
+                          : ""}
+                      </span>
                       {profile.is_default ? (
                         <span className="ml-2 rounded bg-cyan-900/40 px-2 py-0.5 text-[10px] uppercase text-cyan-100">
                           {t("accounts.default")}
                         </span>
                       ) : null}
                     </p>
-                    <span
-                      className={`rounded border px-2 py-0.5 text-[10px] uppercase ${profileStatusClass(profile.status)}`}
-                    >
-                      {profile.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void activateCredentialProfile(profile.profile_id)}
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
+                      >
+                        {t("accounts.setDefault")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void testCredentialProfile(profile.profile_id)}
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-violet-500/40 px-2 py-1 text-[11px] text-violet-100 disabled:opacity-50"
+                      >
+                        {t("accounts.test")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteCredentialProfile(profile.profile_id)}
+                        disabled={integrationLoading}
+                        className="rounded-lg border border-rose-500/40 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
+                      >
+                        {t("accounts.delete")}
+                      </button>
+                      <span
+                        className={`rounded border px-2 py-0.5 text-[10px] uppercase ${profileStatusClass(profile.status)}`}
+                      >
+                        {profile.status}
+                      </span>
+                    </div>
                   </div>
-                  <p className="mt-1 text-xs text-zinc-400">
-                    {profile.role} | {profile.auth_mode}
-                    {profile.identity_handle ? ` | ${profile.identity_handle}` : ""}
-                    {profile.target ? ` | ${profile.target}` : ""}
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Publish: ok={profile.successful_publishes} / fail={profile.failed_publishes}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void activateCredentialProfile(profile.profile_id)}
-                      disabled={integrationLoading}
-                      className="rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-100 disabled:opacity-50"
-                    >
-                      {t("accounts.setDefault")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void testCredentialProfile(profile.profile_id)}
-                      disabled={integrationLoading}
-                      className="rounded-lg border border-violet-500/40 px-2 py-1 text-[11px] text-violet-100 disabled:opacity-50"
-                    >
-                      {t("accounts.test")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void deleteCredentialProfile(profile.profile_id)}
-                      disabled={integrationLoading}
-                      className="rounded-lg border border-rose-500/40 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
-                    >
-                      {t("accounts.delete")}
-                    </button>
-                  </div>
-                  {integrationTests[profile.profile_id] ? (
-                    <p className="mt-2 text-xs text-cyan-200">
-                      {integrationTests[profile.profile_id]}
-                    </p>
-                  ) : null}
                 </article>
               ))}
             </div>
