@@ -790,6 +790,14 @@ class BrandStudioService:
         with self._lock:
             account_id = f"{channel}-{uuid4().hex[:8]}"
             current = self._accounts.get(channel, {})
+            if payload.role == "supporting":
+                if not payload.supports_account_id:
+                    raise ValueError("supporting_account_requires_supports_account_id")
+                referenced = current.get(payload.supports_account_id)
+                if referenced is None:
+                    raise ChannelAccountNotFoundError("supports_account_id_not_found")
+                if referenced.role != "primary":
+                    raise ValueError("supports_account_id_must_reference_primary_account")
             created = ChannelAccount(
                 account_id=account_id,
                 channel=channel,
@@ -1174,6 +1182,7 @@ class BrandStudioService:
                             channel=channel,
                             language=language,
                             content=teaser,
+                            account_id=acc.account_id,
                         )
                     )
 
@@ -1200,7 +1209,7 @@ class BrandStudioService:
         account_id: str | None = None,
         campaign_id: str | None = None,
         scheduled_at: datetime | None = None,
-        publish_mode: str = "manual",
+        publish_mode: Literal["manual", "auto"] = "manual",
     ) -> PublishQueueItem:
         with self._lock:
             bundle = self._drafts.get(draft_id)
@@ -1208,7 +1217,10 @@ class BrandStudioService:
                 raise KeyError("draft_not_found")
 
             candidate_variant = self._choose_variant(
-                bundle=bundle, target_channel=target_channel, target_language=target_language
+                bundle=bundle,
+                target_channel=target_channel,
+                target_language=target_language,
+                account_id=account_id,
             )
             if candidate_variant is None:
                 raise KeyError("draft_variant_not_found")
@@ -1282,13 +1294,22 @@ class BrandStudioService:
         bundle: DraftBundle,
         target_channel: str,
         target_language: str | None,
+        account_id: str | None = None,
     ) -> DraftVariant | None:
         variants = [v for v in bundle.variants if v.channel == target_channel]
         if target_language:
             lang_match = [v for v in variants if v.language == target_language]
             if lang_match:
-                return lang_match[0]
-        return variants[0] if variants else None
+                variants = lang_match
+        if not variants:
+            return None
+        if account_id:
+            account_match = [v for v in variants if v.account_id == account_id]
+            if account_match:
+                return account_match[0]
+        # Prefer primary variants (account_id is None) over supporting ones
+        primary_match = [v for v in variants if v.account_id is None]
+        return primary_match[0] if primary_match else variants[0]
 
     def publish_queue_item(
         self,
@@ -1887,13 +1908,13 @@ class BrandStudioService:
             )
 
     def queue_items(self, *, campaign_id: str | None = None) -> list[PublishQueueItem]:
+        self.process_scheduled_queue()
         with self._lock:
             items = list(self._queue.values())
             if campaign_id:
                 items = [it for it in items if it.campaign_id == campaign_id]
             items.sort(key=lambda it: it.created_at, reverse=True)
-        self.process_scheduled_queue()
-        return items
+            return items
 
     def process_scheduled_queue(self) -> int:
         now = _utcnow()

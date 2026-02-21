@@ -80,6 +80,7 @@ class DraftVariant(BaseModel):
     channel: BrandChannel
     language: DraftLanguage
     content: str
+    account_id: str | None = None
 
 
 class DraftBundle(BaseModel):

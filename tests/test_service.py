@@ -944,3 +944,162 @@ def test_queue_draft_stores_scheduled_at_and_publish_mode(monkeypatch, tmp_path:
     )
     assert queue_item.scheduled_at == scheduled
     assert queue_item.publish_mode == "auto"
+
+
+def test_create_supporting_account_validates_supports_account_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+
+    # Cannot create supporting account without supports_account_id
+    with pytest.raises(ValueError, match="supporting_account_requires_supports_account_id"):
+        service.create_channel_account(
+            "devto",
+            ChannelAccountCreateRequest(
+                display_name="Orphan Supporting",
+                role="supporting",
+            ),
+            actor="tester",
+        )
+
+    # Cannot create supporting account referencing a non-existent account
+    with pytest.raises(ChannelAccountNotFoundError):
+        service.create_channel_account(
+            "devto",
+            ChannelAccountCreateRequest(
+                display_name="Bad Supporting",
+                role="supporting",
+                supports_account_id="devto-nonexistent",
+            ),
+            actor="tester",
+        )
+
+    # Create a primary account first, then verify supporting can reference it
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(display_name="Primary Devto", role="primary"),
+        actor="tester",
+    )
+
+    # Cannot reference a supporting account as the primary target
+    supporting_first = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Devto",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+    with pytest.raises(ValueError, match="supports_account_id_must_reference_primary_account"):
+        service.create_channel_account(
+            "devto",
+            ChannelAccountCreateRequest(
+                display_name="Nested Supporting",
+                role="supporting",
+                supports_account_id=supporting_first.account_id,
+            ),
+            actor="tester",
+        )
+
+
+def test_queue_draft_supporting_variant_selection_with_multiple_accounts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+
+    service = BrandStudioService()
+
+    primary = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Primary Brand",
+            target="devto-main",
+            is_default=True,
+            role="primary",
+        ),
+        actor="tester",
+    )
+    supporting_1 = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Brand 1",
+            target="devto-secondary-1",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+    supporting_2 = service.create_channel_account(
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting Brand 2",
+            target="devto-secondary-2",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    draft = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["devto"],
+        languages=["pl"],
+        tone=None,
+        actor="tester",
+    )
+
+    # The variant for supporting_1 should contain "Supporting Brand 1" attribution
+    # The variant for supporting_2 should contain "Supporting Brand 2" attribution
+    devto_pl_variants = [
+        v for v in draft.variants if v.channel == "devto" and v.language == "pl"
+    ]
+    s1_variant = next(
+        (v for v in devto_pl_variants if v.account_id == supporting_1.account_id), None
+    )
+    s2_variant = next(
+        (v for v in devto_pl_variants if v.account_id == supporting_2.account_id), None
+    )
+    assert s1_variant is not None
+    assert s2_variant is not None
+    # Each supporting variant references the primary brand via attribution
+    assert "Cytując Primary Brand" in s1_variant.content
+
+    # Queueing with specific account_id selects the correct variant
+    queue_item_1 = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="devto",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=supporting_1.account_id,
+    )
+    queue_item_2 = service.queue_draft(
+        draft_id=draft.draft_id,
+        target_channel="devto",
+        target_language="pl",
+        target=None,
+        target_repo=None,
+        target_path=None,
+        payload_override=None,
+        actor="tester",
+        account_id=supporting_2.account_id,
+    )
+
+    assert queue_item_1.account_id == supporting_1.account_id
+    assert queue_item_2.account_id == supporting_2.account_id
+    # Each queue item should have the content from its supporting account's variant
+    assert queue_item_1.payload == s1_variant.content
+    assert queue_item_2.payload == s2_variant.content
