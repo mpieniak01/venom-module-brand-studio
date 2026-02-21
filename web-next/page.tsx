@@ -1991,7 +1991,6 @@ export default function BrandStudioPage() {
                 </p>
               </div>
               </div>
-            </div>
           </section>
         </>
       ) : null}
