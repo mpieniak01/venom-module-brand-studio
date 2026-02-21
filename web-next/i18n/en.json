@@ -27,6 +27,7 @@
   "queue.title": "Publish queue",
   "queue.loading": "Loading queue...",
   "queue.empty": "Queue is empty.",
+  "queue.technicalInCore": "GitHub code publications are classified as technical audit and shown in Configuration -> Audit (Venom Core).",
   "queue.publishNow": "Publish now",
   "queue.published": "Published",
   "audit.title": "Audit",

@@ -68,6 +68,7 @@ from venom_module_brand_studio.connectors.sources import (
     fetch_hn_items,
     fetch_rss_items,
 )
+from venom_module_brand_studio.services.audit_client import BrandStudioAuditPublisher
 from venom_module_brand_studio.services.llm_client import BrandStudioLLMClient
 
 logger = logging.getLogger(__name__)
@@ -368,6 +369,7 @@ class BrandStudioService:
         self._campaign_run_request_ids: set[str] = set()
         self._google_cse = GoogleCSEConnector.from_env()
         self._llm_client = BrandStudioLLMClient.from_env()
+        self._audit_publisher = BrandStudioAuditPublisher.from_env()
         self._init_default_strategy()
         self._init_default_accounts()
         self._load_candidates_cache()
@@ -1632,7 +1634,9 @@ class BrandStudioService:
             self._queue[item.item_id] = item
             self._persist_runtime_state()
             audit_payload = (
-                f"{item.item_id}:campaign={campaign_id}" if campaign_id else item.item_id
+                f"{item.target_channel}:{item.item_id}:campaign={campaign_id}"
+                if campaign_id
+                else f"{item.target_channel}:{item.item_id}"
             )
             self._add_audit(
                 actor=actor,
@@ -1743,7 +1747,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -1818,7 +1822,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -1896,7 +1900,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -1971,7 +1975,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -2046,7 +2050,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -2121,7 +2125,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -2197,7 +2201,7 @@ class BrandStudioService:
                         actor=actor,
                         action="queue.publish",
                         status="published",
-                        payload=item_id,
+                        payload=f"{item.target_channel}:{item_id}",
                     )
                     self._record_account_publish_result(
                         item=item,
@@ -2634,19 +2638,27 @@ class BrandStudioService:
         )
 
     def _add_audit(self, *, actor: str, action: str, status: str, payload: str) -> None:
+        entry: BrandStudioAuditEntry
         with self._lock:
             payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            self._audit.append(
-                BrandStudioAuditEntry(
-                    id=f"audit-{uuid4().hex[:10]}",
-                    actor=actor,
-                    action=action,
-                    status=status,
-                    payload_hash=payload_hash,
-                    timestamp=_utcnow(),
-                )
+            payload_summary = payload.strip()
+            if len(payload_summary) > 220:
+                payload_summary = payload_summary[:220] + "..."
+            entry = BrandStudioAuditEntry(
+                id=f"audit-{uuid4().hex[:10]}",
+                actor=actor,
+                action=action,
+                status=status,
+                payload_hash=payload_hash,
+                timestamp=_utcnow(),
+                details=payload_summary or None,
             )
+            self._audit.append(entry)
             self._persist_runtime_state()
+        try:
+            self._audit_publisher.publish_entry(entry)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("Brand Studio audit publish failed: %s", exc)
 
     # ---- Monitoring feature guard ----
 

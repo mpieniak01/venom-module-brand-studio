@@ -77,6 +77,11 @@ BRAND_STUDIO_LLM_TIMEOUT_SECONDS=25
 BRAND_STUDIO_LLM_MAX_TOKENS=800
 BRAND_STUDIO_LLM_TEMPERATURE=0.3
 BRAND_STUDIO_LLM_AUTO_START_LOCAL_SERVER=true
+BRAND_STUDIO_AUDIT_PUBLISH_ENABLED=true
+BRAND_STUDIO_AUDIT_CORE_BASE_URL=http://127.0.0.1:8000
+BRAND_STUDIO_AUDIT_TIMEOUT_SECONDS=0.8
+BRAND_STUDIO_AUDIT_SOURCE=module.brand_studio
+BRAND_STUDIO_AUDIT_INGEST_TOKEN=
 BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS=86400
 FEATURE_BRAND_STUDIO_MONITORING=true
 BRAND_STUDIO_ALLOWED_USERS=
@@ -121,6 +126,17 @@ After changing env values, restart Venom services.
 4. Detailed traffic logs are opt-in in core via:
    - `ENABLE_TRAFFIC_CONTROL_LOGGING=false` (default),
    - `TRAFFIC_CONTROL_LOG_DIR=/tmp/venom/traffic-control`.
+
+### Canonical audit stream publishing
+1. Module audit entries are still persisted locally in `BRAND_STUDIO_STATE_FILE`.
+2. Each new audit entry is also published (best-effort) to core endpoint `/api/v1/audit/stream`.
+3. Queue events for `github` channel are marked as technical (`core.technical.github_publish`) for visibility in core audit.
+4. Publishing can be controlled by:
+   - `BRAND_STUDIO_AUDIT_PUBLISH_ENABLED=true|false`
+   - `BRAND_STUDIO_AUDIT_CORE_BASE_URL=http://127.0.0.1:8000`
+   - `BRAND_STUDIO_AUDIT_TIMEOUT_SECONDS=0.8`
+   - `BRAND_STUDIO_AUDIT_SOURCE=module.brand_studio`
+   - `BRAND_STUDIO_AUDIT_INGEST_TOKEN=<optional token>`
 
 ### Runtime state persistence
 1. Queue and audit are persisted in `BRAND_STUDIO_STATE_FILE`.

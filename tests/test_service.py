@@ -26,6 +26,59 @@ def test_canonical_url_removes_tracking_params() -> None:
     assert url == "https://example.org/post?id=1"
 
 
+def test_add_audit_publishes_entry_to_core_stream(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+    published = []
+
+    class FakeAuditPublisher:
+        def publish_entry(self, entry):
+            published.append(entry)
+            return True
+
+    service._audit_publisher = FakeAuditPublisher()  # type: ignore[assignment]
+    service._add_audit(
+        actor="tester",
+        action="custom.action",
+        status="ok",
+        payload="payload-a",
+    )
+
+    assert len(published) == 1
+    assert published[0].action == "custom.action"
+    assert published[0].actor == "tester"
+
+
+def test_add_audit_keeps_local_entry_when_core_publish_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+
+    class FailingAuditPublisher:
+        def publish_entry(self, entry):
+            raise RuntimeError("core unavailable")
+
+    service._audit_publisher = FailingAuditPublisher()  # type: ignore[assignment]
+    service._add_audit(
+        actor="tester",
+        action="custom.action.failed",
+        status="failed",
+        payload="payload-b",
+    )
+
+    entries = service.audit_items()
+    assert entries
+    assert entries[0].action == "custom.action.failed"
+    assert entries[0].status == "failed"
+
+
 def test_candidates_are_scored_and_deduplicated(monkeypatch) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     service = BrandStudioService()

@@ -260,6 +260,9 @@ const CHANNELS: PublishChannel[] = [
   "devto",
   "hashnode",
 ];
+const BRAND_PUBLICATION_QUEUE_CHANNELS: PublishChannel[] = CHANNELS.filter(
+  (channel) => channel !== "github"
+);
 
 const dict: Record<Lang, Record<string, string>> = { pl, en, de };
 
@@ -330,7 +333,7 @@ const PL_HELP: Record<string, string> = {
     "Drafty: generowanie wariantów treści na podstawie wybranego kandydata i kanałów.",
   "drafts.candidate": "Kandydat (temat), z którego zostaną wygenerowane drafty.",
   "queue.title":
-    "Kolejka publikacji: wpisy gotowe lub oczekujące na publikację do kanałów.",
+    "Kolejka publikacji: wpisy brandowe gotowe lub oczekujące na publikację do kanałów.",
   "queue.account": "Konto docelowe kanału, którego użyje publikacja.",
   "audit.title":
     "Audyt: historia operacji modułu (generowanie draftów, testy integracji, publikacje).",
@@ -900,7 +903,8 @@ export default function BrandStudioPage() {
   }, []);
 
   const filteredQueue = useMemo(() => {
-    return queue.filter((item) => {
+    const queueForBrand = queue.filter((item) => item.target_channel !== "github");
+    return queueForBrand.filter((item) => {
       if (queueChannelFilter !== "all" && item.target_channel !== queueChannelFilter) {
         return false;
       }
@@ -1869,7 +1873,9 @@ export default function BrandStudioPage() {
               </h2>
               {queueLoading ? <p className="text-zinc-400">{t("queue.loading")}</p> : null}
               {queueError ? <p className="text-rose-300">{queueError}</p> : null}
-              {!queueLoading && !queue.length ? <p className="text-zinc-400">{t("queue.empty")}</p> : null}
+              {!queueLoading && !filteredQueue.length ? (
+                <p className="text-zinc-400">{t("queue.empty")}</p>
+              ) : null}
               <div className="grid gap-2 md:grid-cols-3">
                 <label className="space-y-1">
                   <span className="text-[11px] uppercase text-zinc-500">
@@ -1883,7 +1889,7 @@ export default function BrandStudioPage() {
                     className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
                   >
                     <option value="all">{lang === "pl" ? "Wszystkie kanały" : "All channels"}</option>
-                    {CHANNELS.map((channelId) => (
+                    {BRAND_PUBLICATION_QUEUE_CHANNELS.map((channelId) => (
                       <option key={channelId} value={channelId}>
                         {channelId}
                       </option>
@@ -1931,6 +1937,7 @@ export default function BrandStudioPage() {
               <p className="text-[11px] text-zinc-500">
                 Dane ładowane przy wejściu na ekran i po akcjach (generowanie/kolejkowanie/publikacja).
               </p>
+              <p className="text-[11px] text-zinc-500">{t("queue.technicalInCore")}</p>
               <div
                 className="pr-2"
                 style={{
