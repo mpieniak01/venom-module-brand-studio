@@ -803,3 +803,80 @@ def test_link_draft_to_campaign() -> None:
         headers=AUTH_HEADERS,
     )
     assert resp_camp_404.status_code == 404
+
+
+def test_create_channel_account_with_role_and_supports_account_id() -> None:
+    client = build_client()
+
+    # Create primary account
+    primary_resp = client.post(
+        "/api/v1/brand-studio/channels/devto/accounts",
+        json={
+            "display_name": "Primary Devto",
+            "target": "devto-main",
+            "is_default": True,
+            "role": "primary",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert primary_resp.status_code == 200
+    primary_id = primary_resp.json()["item"]["account_id"]
+    assert primary_resp.json()["item"]["role"] == "primary"
+    assert primary_resp.json()["item"]["supports_account_id"] is None
+
+    # Create supporting account
+    supporting_resp = client.post(
+        "/api/v1/brand-studio/channels/devto/accounts",
+        json={
+            "display_name": "Supporting Devto",
+            "target": "devto-secondary",
+            "role": "supporting",
+            "supports_account_id": primary_id,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert supporting_resp.status_code == 200
+    supporting_item = supporting_resp.json()["item"]
+    assert supporting_item["role"] == "supporting"
+    assert supporting_item["supports_account_id"] == primary_id
+
+
+def test_queue_draft_with_scheduled_at_and_publish_mode() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    client = build_client()
+
+    candidates = client.get("/api/v1/brand-studio/sources/candidates").json()["items"]
+    candidate_id = candidates[0]["id"]
+
+    draft_resp = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={
+            "candidate_id": candidate_id,
+            "channels": ["x"],
+            "languages": ["pl"],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert draft_resp.status_code == 200
+    draft_id = draft_resp.json()["draft_id"]
+
+    future_time = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    queue_resp = client.post(
+        f"/api/v1/brand-studio/drafts/{draft_id}/queue",
+        json={
+            "target_channel": "x",
+            "publish_mode": "auto",
+            "scheduled_at": future_time,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert queue_resp.status_code == 200
+    item_id = queue_resp.json()["item_id"]
+    assert queue_resp.json()["status"] == "queued"
+
+    queue_list = client.get("/api/v1/brand-studio/queue")
+    items = queue_list.json()["items"]
+    matched = next(it for it in items if it["item_id"] == item_id)
+    assert matched["publish_mode"] == "auto"
+    assert matched["scheduled_at"] is not None

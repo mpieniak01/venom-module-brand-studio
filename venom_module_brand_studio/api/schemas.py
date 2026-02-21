@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 PublishStatus = Literal["draft", "ready", "queued", "published", "failed", "cancelled"]
+AccountRole = Literal["primary", "supporting"]
 DiscoveryMode = Literal["stub", "hybrid", "live"]
 BrandChannel = Literal[
     "x",
@@ -98,6 +99,8 @@ class QueueDraftRequest(BaseModel):
     target_language: DraftLanguage | None = None
     payload_override: str | None = None
     campaign_id: str | None = None
+    scheduled_at: datetime | None = None
+    publish_mode: Literal["manual", "auto"] = "manual"
 
 
 class QueueCreateResponse(BaseModel):
@@ -135,6 +138,8 @@ class PublishQueueItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     campaign_id: str | None = None
+    scheduled_at: datetime | None = None
+    publish_mode: Literal["manual", "auto"] = "manual"
 
 
 class QueueResponse(BaseModel):
@@ -255,6 +260,8 @@ class ChannelAccount(BaseModel):
     target: str | None = None
     enabled: bool = True
     is_default: bool = False
+    role: AccountRole = "primary"
+    supports_account_id: str | None = None
     secret_status: IntegrationStatus = "missing"
     capabilities: list[str] = Field(default_factory=list)
     last_tested_at: datetime | None = None
@@ -272,6 +279,8 @@ class ChannelAccountCreateRequest(BaseModel):
     target: str | None = None
     enabled: bool = True
     is_default: bool = False
+    role: AccountRole = "primary"
+    supports_account_id: str | None = None
 
 
 class ChannelAccountUpdateRequest(BaseModel):
