@@ -149,6 +149,39 @@ def test_generate_draft_route_uses_llm_and_keeps_attribution(
     assert "Original knowledge source:" in supporting_item["content"]
 
 
+def test_generate_draft_route_cache_and_refresh_flag() -> None:
+    client = build_client()
+    candidate_id = client.get("/api/v1/brand-studio/sources/candidates").json()["items"][0]["id"]
+
+    base_payload = {
+        "candidate_id": candidate_id,
+        "channels": ["x"],
+        "languages": ["pl"],
+        "tone": "expert",
+    }
+    first = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json=base_payload,
+        headers=AUTH_HEADERS,
+    )
+    second = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json=base_payload,
+        headers=AUTH_HEADERS,
+    )
+    refreshed = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={**base_payload, "refresh": True},
+        headers=AUTH_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert refreshed.status_code == 200
+    assert first.json()["draft_id"] == second.json()["draft_id"]
+    assert refreshed.json()["draft_id"] != first.json()["draft_id"]
+
+
 def test_publish_requires_confirm_publish_true() -> None:
     client = build_client()
     candidates = client.get("/api/v1/brand-studio/sources/candidates").json()["items"]

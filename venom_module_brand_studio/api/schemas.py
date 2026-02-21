@@ -74,6 +74,7 @@ class DraftGenerateRequest(BaseModel):
     languages: list[DraftLanguage] = Field(min_length=1)
     tone: Literal["neutral", "expert", "short", "cta"] | None = None
     campaign_id: str | None = None
+    refresh: bool = False
 
 
 class DraftVariant(BaseModel):

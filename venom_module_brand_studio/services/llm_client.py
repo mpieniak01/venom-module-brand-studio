@@ -45,6 +45,7 @@ class BrandStudioLLMConfig:
     timeout_seconds: float
     max_tokens: int
     temperature: float
+    auto_start_local_server: bool
 
 
 class BrandStudioLLMClient:
@@ -69,6 +70,10 @@ class BrandStudioLLMClient:
                 ),
                 max_tokens=max(64, _env_int("BRAND_STUDIO_LLM_MAX_TOKENS", default=800)),
                 temperature=_env_float("BRAND_STUDIO_LLM_TEMPERATURE", default=0.3),
+                auto_start_local_server=_env_flag(
+                    "BRAND_STUDIO_LLM_AUTO_START_LOCAL_SERVER",
+                    default=True,
+                ),
             )
         )
 
@@ -83,7 +88,6 @@ class BrandStudioLLMClient:
         if not self.config.enabled:
             raise LLMGenerationError("llm_disabled")
 
-        url = f"{self.config.core_base_url.rstrip('/')}/api/v1/llm/simple/stream"
         payload: dict[str, object] = {
             "content": prompt,
             "max_tokens": max_tokens or self.config.max_tokens,
@@ -91,10 +95,22 @@ class BrandStudioLLMClient:
         }
         if session_id:
             payload["session_id"] = session_id
+        try:
+            return self._stream_completion(payload)
+        except LLMGenerationError as exc:
+            # Best-effort auto-recovery path for local runtimes (ollama/vllm).
+            if not self.config.auto_start_local_server:
+                raise
+            if not self._should_try_auto_start(exc):
+                raise
+            if not self._try_auto_start_local_server():
+                raise
+            return self._stream_completion(payload)
 
+    def _stream_completion(self, payload: dict[str, object]) -> str:
+        url = f"{self.config.core_base_url.rstrip('/')}/api/v1/llm/simple/stream"
         chunks: list[str] = []
         current_event = ""
-
         try:
             with httpx.Client(timeout=self.config.timeout_seconds) as client:
                 with client.stream("POST", url, json=payload) as response:
@@ -137,3 +153,45 @@ class BrandStudioLLMClient:
         if not content:
             raise LLMGenerationError("llm_empty_response")
         return content
+
+    def _should_try_auto_start(self, exc: Exception) -> bool:
+        detail = str(exc).lower()
+        return (
+            "connection" in detail
+            or "timeout" in detail
+            or "http 503" in detail
+            or "llm_http_error" in detail
+        )
+
+    def _try_auto_start_local_server(self) -> bool:
+        base = self.config.core_base_url.rstrip("/")
+        active_url = f"{base}/api/v1/system/llm-servers/active"
+        try:
+            with httpx.Client(timeout=min(self.config.timeout_seconds, 10.0)) as client:
+                active = client.get(active_url)
+                active.raise_for_status()
+                payload = active.json() if active.content else {}
+                server_name = self._resolve_local_server_name(payload)
+                if server_name not in {"ollama", "vllm"}:
+                    return False
+                start_url = f"{base}/api/v1/system/llm-servers/{server_name}/start"
+                start_resp = client.post(start_url)
+                return start_resp.status_code < 400
+        except Exception:
+            return False
+
+    def _resolve_local_server_name(self, payload: dict) -> str | None:
+        raw = payload.get("active_server")
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in {"ollama", "vllm"}:
+                return normalized
+            if normalized == "local":
+                endpoint = payload.get("active_endpoint")
+                if isinstance(endpoint, str):
+                    endpoint_l = endpoint.lower()
+                    if "11434" in endpoint_l or "ollama" in endpoint_l:
+                        return "ollama"
+                    if "vllm" in endpoint_l or ":8000" in endpoint_l or ":8001" in endpoint_l:
+                        return "vllm"
+        return None

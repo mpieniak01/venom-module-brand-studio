@@ -897,6 +897,84 @@ def test_generate_draft_llm_error_falls_back_and_adds_audit(monkeypatch, tmp_pat
     )
 
 
+def test_generate_draft_returns_cached_bundle_by_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS", "3600")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+    calls = {"count": 0}
+
+    class FakeLLMClient:
+        enabled = True
+
+        def generate_text(self, _prompt: str, **_kwargs) -> str:
+            calls["count"] += 1
+            return f"LLM output #{calls['count']}"
+
+    service._llm_client = FakeLLMClient()  # type: ignore[assignment]
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    first = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    second = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    assert first.draft_id == second.draft_id
+    assert first.variants[0].content == second.variants[0].content
+    assert calls["count"] == 1
+
+
+def test_generate_draft_refresh_true_creates_new_version(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    monkeypatch.setenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS", "3600")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+
+    service = BrandStudioService()
+    calls = {"count": 0}
+
+    class FakeLLMClient:
+        enabled = True
+
+        def generate_text(self, _prompt: str, **_kwargs) -> str:
+            calls["count"] += 1
+            return f"LLM output #{calls['count']}"
+
+    service._llm_client = FakeLLMClient()  # type: ignore[assignment]
+
+    items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
+    first = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+    )
+    second = service.generate_draft(
+        candidate_id=items[0].id,
+        channels=["x"],
+        languages=["pl"],
+        tone="expert",
+        actor="tester",
+        refresh=True,
+    )
+    assert first.draft_id != second.draft_id
+    assert calls["count"] == 2
+
+
 def test_process_scheduled_queue_auto_publishes_due_items(monkeypatch, tmp_path: Path) -> None:
     from datetime import timedelta
 

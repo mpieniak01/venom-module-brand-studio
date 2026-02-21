@@ -72,6 +72,14 @@ from venom_module_brand_studio.services.llm_client import BrandStudioLLMClient
 logger = logging.getLogger(__name__)
 
 
+def _draft_cache_ttl_seconds() -> int:
+    raw = (os.getenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS") or "").strip()
+    try:
+        return max(60, int(raw)) if raw else 86400
+    except ValueError:
+        return 86400
+
+
 class StrategyNotFoundError(KeyError):
     pass
 
@@ -322,6 +330,7 @@ class BrandStudioService:
         self._candidates: list[ContentCandidate] = []
         self._last_refresh_at: datetime = datetime.fromtimestamp(0, tz=UTC)
         self._drafts: dict[str, DraftBundle] = {}
+        self._draft_cache: dict[str, tuple[str, datetime]] = {}
         self._queue: dict[str, PublishQueueItem] = {}
         self._audit: list[BrandStudioAuditEntry] = []
         self._publisher = GitHubPublisher.from_env()
@@ -500,6 +509,8 @@ class BrandStudioService:
             payload = json.loads(self._state_file.read_text(encoding="utf-8"))
             queue_raw = payload.get("queue")
             audit_raw = payload.get("audit")
+            drafts_raw = payload.get("drafts")
+            draft_cache_raw = payload.get("draft_cache")
             strategies_raw = payload.get("strategies")
             active_strategy_id = payload.get("active_strategy_id")
             integration_raw = payload.get("integration_tests")
@@ -518,6 +529,32 @@ class BrandStudioService:
                     if isinstance(item, dict):
                         loaded_audit.append(BrandStudioAuditEntry.model_validate(item))
                 self._audit = loaded_audit
+
+            if isinstance(drafts_raw, list):
+                loaded_drafts: dict[str, DraftBundle] = {}
+                for item in drafts_raw:
+                    if isinstance(item, dict):
+                        draft = DraftBundle.model_validate(item)
+                        loaded_drafts[draft.draft_id] = draft
+                self._drafts = loaded_drafts
+
+            if isinstance(draft_cache_raw, dict):
+                loaded_cache: dict[str, tuple[str, datetime]] = {}
+                for key, value in draft_cache_raw.items():
+                    if not isinstance(key, str) or not isinstance(value, dict):
+                        continue
+                    draft_id = value.get("draft_id")
+                    generated_at_raw = value.get("generated_at")
+                    if not isinstance(draft_id, str) or not isinstance(generated_at_raw, str):
+                        continue
+                    try:
+                        generated_at = datetime.fromisoformat(generated_at_raw)
+                        if generated_at.tzinfo is None:
+                            generated_at = generated_at.replace(tzinfo=UTC)
+                        loaded_cache[key] = (draft_id, generated_at)
+                    except Exception:
+                        continue
+                self._draft_cache = loaded_cache
 
             if isinstance(strategies_raw, list):
                 loaded_strategies: dict[str, StrategyConfig] = {}
@@ -540,6 +577,7 @@ class BrandStudioService:
                         except Exception:
                             pass
                 self._last_integration_test = loaded
+            self._cleanup_draft_cache()
         except Exception as exc:
             logger.warning("Brand Studio runtime state load failed: %s", exc)
             return
@@ -548,6 +586,11 @@ class BrandStudioService:
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
             payload = {
+                "drafts": [item.model_dump(mode="json") for item in self._drafts.values()],
+                "draft_cache": {
+                    key: {"draft_id": draft_id, "generated_at": generated_at.isoformat()}
+                    for key, (draft_id, generated_at) in self._draft_cache.items()
+                },
                 "queue": [item.model_dump(mode="json") for item in self._queue.values()],
                 "audit": [item.model_dump(mode="json") for item in self._audit],
                 "strategies": [item.model_dump(mode="json") for item in self._strategies.values()],
@@ -1125,10 +1168,29 @@ class BrandStudioService:
         tone: str | None,
         actor: str,
         campaign_id: str | None = None,
+        refresh: bool = False,
     ) -> DraftBundle:
         candidate = next((it for it in self._candidates if it.id == candidate_id), None)
         if candidate is None:
             raise KeyError("candidate_not_found")
+
+        cache_key = self._draft_cache_key(
+            candidate_id=candidate_id,
+            channels=channels,
+            languages=languages,
+            tone=tone,
+            campaign_id=campaign_id,
+        )
+        if not refresh:
+            cached = self._get_cached_draft(cache_key)
+            if cached is not None:
+                self._add_audit(
+                    actor=actor,
+                    action="draft.generate",
+                    status="cached",
+                    payload=cached.draft_id,
+                )
+                return cached
 
         variants: list[DraftVariant] = []
 
@@ -1214,9 +1276,58 @@ class BrandStudioService:
             draft_id=draft_id, candidate_id=candidate_id, variants=variants, campaign_id=campaign_id
         )
         self._drafts[draft_id] = bundle
+        self._draft_cache[cache_key] = (draft_id, _utcnow())
+        self._cleanup_draft_cache()
+        self._persist_runtime_state()
         audit_payload = f"{draft_id}:campaign={campaign_id}" if campaign_id else draft_id
         self._add_audit(actor=actor, action="draft.generate", status="ok", payload=audit_payload)
         return bundle
+
+    def _draft_cache_key(
+        self,
+        *,
+        candidate_id: str,
+        channels: list[str],
+        languages: list[str],
+        tone: str | None,
+        campaign_id: str | None,
+    ) -> str:
+        return json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "channels": channels,
+                "languages": languages,
+                "tone": tone or "",
+                "campaign_id": campaign_id or "",
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _get_cached_draft(self, cache_key: str) -> DraftBundle | None:
+        cached = self._draft_cache.get(cache_key)
+        if cached is None:
+            return None
+        draft_id, generated_at = cached
+        age_seconds = (_utcnow() - generated_at).total_seconds()
+        if age_seconds > _draft_cache_ttl_seconds():
+            self._draft_cache.pop(cache_key, None)
+            return None
+        bundle = self._drafts.get(draft_id)
+        if bundle is None:
+            self._draft_cache.pop(cache_key, None)
+            return None
+        return bundle
+
+    def _cleanup_draft_cache(self) -> None:
+        now = _utcnow()
+        ttl = _draft_cache_ttl_seconds()
+        for cache_key, (draft_id, generated_at) in list(self._draft_cache.items()):
+            if draft_id not in self._drafts:
+                self._draft_cache.pop(cache_key, None)
+                continue
+            if (now - generated_at).total_seconds() > ttl:
+                self._draft_cache.pop(cache_key, None)
 
     def _fallback_primary_content(
         self,
