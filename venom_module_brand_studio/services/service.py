@@ -67,6 +67,7 @@ from venom_module_brand_studio.connectors.sources import (
     fetch_hn_items,
     fetch_rss_items,
 )
+from venom_module_brand_studio.services.llm_client import BrandStudioLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +349,7 @@ class BrandStudioService:
         self._monitoring_request_id_to_scan: dict[str, str] = {}
         self._campaign_run_request_ids: set[str] = set()
         self._google_cse = GoogleCSEConnector.from_env()
+        self._llm_client = BrandStudioLLMClient.from_env()
         self._init_default_strategy()
         self._init_default_accounts()
         self._load_candidates_cache()
@@ -1128,23 +1130,31 @@ class BrandStudioService:
         if candidate is None:
             raise KeyError("candidate_not_found")
 
-        tone_suffix = f" ({tone})" if tone else ""
         variants: list[DraftVariant] = []
 
         # Stage 1: generate primary content variants
         primary_content: dict[str, str] = {}
         for channel in channels:
             for language in languages:
-                if language == "pl":
-                    content = (
-                        f"{candidate.topic}: {candidate.summary} "
-                        f"Moja perspektywa inżynierska i praktyczne wnioski.{tone_suffix}".strip()
-                    )
-                else:
-                    content = (
-                        f"{candidate.topic}: {candidate.summary} "
-                        f"My engineering perspective with practical takeaways.{tone_suffix}".strip()
-                    )
+                fallback = self._fallback_primary_content(
+                    candidate_topic=candidate.topic,
+                    candidate_summary=candidate.summary,
+                    language=language,
+                    tone=tone,
+                )
+                content = self._generate_draft_text_with_llm_fallback(
+                    prompt=self._build_primary_prompt(
+                        candidate_topic=candidate.topic,
+                        candidate_summary=candidate.summary,
+                        candidate_url=candidate.url,
+                        channel=channel,
+                        language=language,
+                        tone=tone,
+                    ),
+                    fallback=fallback,
+                    actor=actor,
+                    audit_context=f"primary:{channel}:{language}",
+                )
                 primary_content[f"{channel}:{language}"] = content
                 variants.append(DraftVariant(channel=channel, language=language, content=content))
 
@@ -1165,18 +1175,31 @@ class BrandStudioService:
                 )
                 for language in languages:
                     base = primary_content.get(f"{channel}:{language}", "")
-                    if language == "pl":
-                        teaser = (
-                            f"Cytując {source_ref}: {candidate.topic}. "
-                            f"Oryginalne źródło wiedzy: {candidate.url} | "
-                            f"{base}"
-                        ).strip()
-                    else:
-                        teaser = (
-                            f"Quoting {source_ref}: {candidate.topic}. "
-                            f"Original knowledge source: {candidate.url} | "
-                            f"{base}"
-                        ).strip()
+                    fallback = self._fallback_supporting_content(
+                        source_ref=source_ref,
+                        candidate_topic=candidate.topic,
+                        candidate_url=candidate.url,
+                        primary_content=base,
+                        language=language,
+                    )
+                    teaser = self._generate_draft_text_with_llm_fallback(
+                        prompt=self._build_supporting_prompt(
+                            source_ref=source_ref,
+                            candidate_topic=candidate.topic,
+                            candidate_summary=candidate.summary,
+                            candidate_url=candidate.url,
+                            primary_content=base,
+                            channel=channel,
+                            language=language,
+                            tone=tone,
+                        ),
+                        fallback=fallback,
+                        actor=actor,
+                        audit_context=f"supporting:{channel}:{language}:{acc.account_id}",
+                    )
+                    teaser = self._ensure_supporting_attribution(
+                        text=teaser, language=language, candidate_url=candidate.url
+                    )
                     variants.append(
                         DraftVariant(
                             channel=channel,
@@ -1194,6 +1217,157 @@ class BrandStudioService:
         audit_payload = f"{draft_id}:campaign={campaign_id}" if campaign_id else draft_id
         self._add_audit(actor=actor, action="draft.generate", status="ok", payload=audit_payload)
         return bundle
+
+    def _fallback_primary_content(
+        self,
+        *,
+        candidate_topic: str,
+        candidate_summary: str,
+        language: str,
+        tone: str | None,
+    ) -> str:
+        tone_suffix = f" ({tone})" if tone else ""
+        if language == "pl":
+            return (
+                f"{candidate_topic}: {candidate_summary} "
+                f"Moja perspektywa inżynierska i praktyczne wnioski.{tone_suffix}".strip()
+            )
+        return (
+            f"{candidate_topic}: {candidate_summary} "
+            f"My engineering perspective with practical takeaways.{tone_suffix}".strip()
+        )
+
+    def _fallback_supporting_content(
+        self,
+        *,
+        source_ref: str,
+        candidate_topic: str,
+        candidate_url: str,
+        primary_content: str,
+        language: str,
+    ) -> str:
+        if language == "pl":
+            return (
+                f"Cytując {source_ref}: {candidate_topic}. "
+                f"Oryginalne źródło wiedzy: {candidate_url} | "
+                f"{primary_content}"
+            ).strip()
+        return (
+            f"Quoting {source_ref}: {candidate_topic}. "
+            f"Original knowledge source: {candidate_url} | "
+            f"{primary_content}"
+        ).strip()
+
+    def _build_primary_prompt(
+        self,
+        *,
+        candidate_topic: str,
+        candidate_summary: str,
+        candidate_url: str,
+        channel: str,
+        language: str,
+        tone: str | None,
+    ) -> str:
+        if language == "pl":
+            return (
+                "Role: primary\n"
+                "Jesteś ekspertem budującym markę osobistą inżyniera AI.\n"
+                "Napisz merytoryczny post ekspercki do publikacji.\n"
+                f"Kanał: {channel}\n"
+                f"Język: {language}\n"
+                f"Ton: {tone or 'expert'}\n"
+                f"Temat: {candidate_topic}\n"
+                f"Streszczenie: {candidate_summary}\n"
+                f"Źródło: {candidate_url}\n"
+                "Wymagania: 1) konkret i praktyczne wnioski, 2) naturalny styl, "
+                "3) bez nagłówków markdown i bez list numerowanych."
+            )
+        return (
+            "Role: primary\n"
+            "You are an AI engineering expert building a personal brand.\n"
+            "Write a full expert post ready for publication.\n"
+            f"Channel: {channel}\n"
+            f"Language: {language}\n"
+            f"Tone: {tone or 'expert'}\n"
+            f"Topic: {candidate_topic}\n"
+            f"Summary: {candidate_summary}\n"
+            f"Source: {candidate_url}\n"
+            "Requirements: 1) practical insight, 2) professional engaging tone, "
+            "3) no markdown headers and no numbered lists."
+        )
+
+    def _build_supporting_prompt(
+        self,
+        *,
+        source_ref: str,
+        candidate_topic: str,
+        candidate_summary: str,
+        candidate_url: str,
+        primary_content: str,
+        channel: str,
+        language: str,
+        tone: str | None,
+    ) -> str:
+        if language == "pl":
+            return (
+                "Role: supporting\n"
+                "Napisz teaser/cytat promujący główny wpis.\n"
+                f"Kanał: {channel}\n"
+                f"Język: {language}\n"
+                f"Ton: {tone or 'short'}\n"
+                f"Marka źródłowa: {source_ref}\n"
+                f"Temat: {candidate_topic}\n"
+                f"Streszczenie: {candidate_summary}\n"
+                f"Oryginalny wpis URL: {candidate_url}\n"
+                f"Kontekst głównego wpisu: {primary_content}\n"
+                "Wymagania: max 2-3 zdania, musi zawierać zwrot 'Oryginalne źródło wiedzy: <URL>'."
+            )
+        return (
+            "Role: supporting\n"
+            "Write a short teaser/quote that redirects traffic to the primary post.\n"
+            f"Channel: {channel}\n"
+            f"Language: {language}\n"
+            f"Tone: {tone or 'short'}\n"
+            f"Primary source brand: {source_ref}\n"
+            f"Topic: {candidate_topic}\n"
+            f"Summary: {candidate_summary}\n"
+            f"Original post URL: {candidate_url}\n"
+            f"Primary post context: {primary_content}\n"
+            "Requirements: max 2-3 sentences, include 'Original knowledge source: <URL>'."
+        )
+
+    def _generate_draft_text_with_llm_fallback(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        actor: str,
+        audit_context: str,
+    ) -> str:
+        if not self._llm_client.enabled:
+            return fallback
+        try:
+            return self._llm_client.generate_text(prompt)
+        except Exception as exc:
+            logger.warning("Brand Studio LLM fallback (%s): %s", audit_context, exc)
+            self._add_audit(
+                actor=actor,
+                action="draft.generate.llm",
+                status="fallback",
+                payload=f"{audit_context}:{exc}",
+            )
+            return fallback
+
+    def _ensure_supporting_attribution(
+        self, *, text: str, language: str, candidate_url: str
+    ) -> str:
+        if language == "pl":
+            if "Oryginalne źródło wiedzy:" in text:
+                return text
+            return f"{text}\n\nOryginalne źródło wiedzy: {candidate_url}".strip()
+        if "Original knowledge source:" in text:
+            return text
+        return f"{text}\n\nOriginal knowledge source: {candidate_url}".strip()
 
     def queue_draft(
         self,

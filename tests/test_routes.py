@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from venom_module_brand_studio.api.routes import router
+from venom_module_brand_studio.api.schemas import ChannelAccountCreateRequest
 from venom_module_brand_studio.services import service as service_module
 
 AUTH_HEADERS = {"X-Authenticated-User": "mpieniak", "X-Autonomy-Level": "20"}
@@ -95,6 +96,57 @@ def test_generate_queue_publish_and_audit_flow() -> None:
     audit_list = client.get("/api/v1/brand-studio/audit")
     assert audit_list.status_code == 200
     assert audit_list.json()["count"] >= 3
+
+
+def test_generate_draft_route_uses_llm_and_keeps_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
+    service_module._service = service_module.BrandStudioService()
+
+    class FakeLLMClient:
+        enabled = True
+
+        def generate_text(self, prompt: str, **_kwargs) -> str:
+            if "Role: supporting" in prompt:
+                return "Short supporting teaser."
+            return "Primary LLM post."
+
+    service_module._service._llm_client = FakeLLMClient()  # type: ignore[attr-defined]
+
+    primary = service_module._service.create_channel_account(  # type: ignore[attr-defined]
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Primary account",
+            role="primary",
+            is_default=True,
+        ),
+        actor="tester",
+    )
+    service_module._service.create_channel_account(  # type: ignore[attr-defined]
+        "devto",
+        ChannelAccountCreateRequest(
+            display_name="Supporting account",
+            role="supporting",
+            supports_account_id=primary.account_id,
+        ),
+        actor="tester",
+    )
+
+    client = build_client()
+    candidate_id = client.get("/api/v1/brand-studio/sources/candidates").json()["items"][0]["id"]
+    response = client.post(
+        "/api/v1/brand-studio/drafts/generate",
+        json={"candidate_id": candidate_id, "channels": ["devto"], "languages": ["en"]},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    variants = response.json()["variants"]
+    assert len(variants) >= 2
+    supporting = [item for item in variants if item["account_id"] is not None]
+    assert supporting
+    supporting_item = supporting[0]
+    assert "Original knowledge source:" in supporting_item["content"]
 
 
 def test_publish_requires_confirm_publish_true() -> None:
