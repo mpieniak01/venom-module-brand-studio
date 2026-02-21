@@ -1631,7 +1631,7 @@ export default function BrandStudioPage() {
       </div>
 
       <section className="flex flex-wrap gap-2 border-b border-white/10">
-        {(["radar", "monitoring", "sources", "keywords", "campaigns", "audit", "config", "integrations"] as const).map((value) => (
+        {(["radar", "monitoring", "sources", "keywords", "campaigns", "config", "integrations"] as const).map((value) => (
           <button
             key={value}
             type="button"
@@ -1986,18 +1986,9 @@ export default function BrandStudioPage() {
                 </h2>
                 <p className="text-sm text-zinc-400">
                   {lang === "pl"
-                    ? "Log API/audyt jest dostępny wyłącznie w zakładce Audyt. Tutaj pokazujemy tylko log publikacji."
-                    : "API/audit log is available only in the Audit tab. This section shows publication log only."}
+                    ? "Centralny audyt API jest utrzymywany po stronie Venom Core (Konfiguracja → Audyt). W module pozostaje wyłącznie log publikacji treści."
+                    : "Central API audit is maintained in Venom Core (Configuration -> Audit). This module keeps only publication-content logs."}
                 </p>
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setTab("audit")}
-                    className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs text-cyan-100 transition hover:border-cyan-400"
-                  >
-                    {lang === "pl" ? "Przejdź do Audytu" : "Go to Audit tab"}
-                  </button>
-                </div>
               </div>
               </div>
             </div>
