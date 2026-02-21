@@ -2523,9 +2523,9 @@ export default function BrandStudioPage() {
             {!integrationLoading && !filteredProfiles.length ? (
               <p className="text-sm text-zinc-400">{t("accounts.empty")}</p>
             ) : null}
-            <div className="max-h-[920px] divide-y divide-zinc-800/70 overflow-y-auto pr-1">
+            <div className="max-h-[920px] divide-y divide-white/5 overflow-y-auto pr-1">
               {filteredProfiles.map((profile) => (
-                <article key={profile.profile_id} className="py-2">
+                <article key={profile.profile_id} className="px-1 py-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="min-w-0 flex-1 truncate text-sm text-zinc-100">
                       <span className="font-semibold uppercase">{profile.channel}</span>{" "}
