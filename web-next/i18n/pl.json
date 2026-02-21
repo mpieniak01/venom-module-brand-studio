@@ -27,6 +27,7 @@
   "queue.title": "Kolejka publikacji",
   "queue.loading": "Ładowanie kolejki...",
   "queue.empty": "Kolejka jest pusta.",
+  "queue.technicalInCore": "Publikacje kodu na GitHub są klasyfikowane jako audyt techniczny i są widoczne w Konfiguracja -> Audyt (Venom Core).",
   "queue.publishNow": "Publikuj teraz",
   "queue.published": "Opublikowano",
   "audit.title": "Audyt",

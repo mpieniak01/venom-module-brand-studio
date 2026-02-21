@@ -27,6 +27,7 @@
   "queue.title": "Publish-Warteschlange",
   "queue.loading": "Warteschlange wird geladen...",
   "queue.empty": "Warteschlange ist leer.",
+  "queue.technicalInCore": "GitHub-Codepublikationen werden als technisches Audit klassifiziert und unter Konfiguration -> Audit (Venom Core) angezeigt.",
   "queue.publishNow": "Jetzt veröffentlichen",
   "queue.published": "Veröffentlicht",
   "audit.title": "Audit",
