@@ -275,6 +275,28 @@ async function extractErrorMessage(resp: Response): Promise<string> {
   }
 }
 
+function formatFixedDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "0000-00-00 00:00:00";
+  }
+  const yyyy = date.getFullYear().toString().padStart(4, "0");
+  const mm = (date.getMonth() + 1).toString().padStart(2, "0");
+  const dd = date.getDate().toString().padStart(2, "0");
+  const hh = date.getHours().toString().padStart(2, "0");
+  const min = date.getMinutes().toString().padStart(2, "0");
+  const sec = date.getSeconds().toString().padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${sec}`;
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const keep = Math.max(4, Math.floor((maxLength - 1) / 2));
+  return `${value.slice(0, keep)}…${value.slice(-keep)}`;
+}
+
 const DEFAULT_FORM: StrategyConfig = {
   id: "",
   name: "",
@@ -869,12 +891,12 @@ export default function BrandStudioPage() {
 
   const outcomeClass = useCallback((outcome: LogOutcome): string => {
     if (outcome === "error") {
-      return "border-rose-500/40 bg-rose-500/10 text-rose-200";
+      return "border-rose-400/30 bg-rose-500/15 text-rose-200";
     }
     if (outcome === "success") {
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+      return "border-emerald-400/30 bg-emerald-500/15 text-emerald-200";
     }
-    return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+    return "border-amber-400/30 bg-amber-500/15 text-amber-200";
   }, []);
 
   const filteredQueue = useMemo(() => {
@@ -1839,7 +1861,7 @@ export default function BrandStudioPage() {
               ) : null}
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-4">
               <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
               <h2 className="inline-flex items-center gap-2 text-lg font-medium text-violet-100">
                 {t("queue.title")}
@@ -1910,7 +1932,7 @@ export default function BrandStudioPage() {
                 Dane ładowane przy wejściu na ekran i po akcjach (generowanie/kolejkowanie/publikacja).
               </p>
               <div
-                className="space-y-2 pr-2"
+                className="pr-2"
                 style={{
                   maxHeight: "690px",
                   overflowY: "scroll",
@@ -1918,136 +1940,64 @@ export default function BrandStudioPage() {
                   overscrollBehavior: "contain",
                 }}
               >
-                {filteredQueue.map((item) => (
-                  <article key={item.item_id} className="min-h-[44px] rounded-lg border border-zinc-800 p-3">
-                    <div className="flex flex-wrap items-center gap-3 text-xs">
-                      <span
-                        className={`rounded border px-2 py-1 uppercase ${outcomeClass(
-                          queueOutcome(item.status)
-                        )}`}
-                      >
-                        {item.target_channel} / {item.status}
-                      </span>
-                      {item.account_display_name ? (
-                        <span className="text-zinc-400">
-                          {t("queue.account")}: {item.account_display_name}
+                <ul className="divide-y divide-white/5">
+                  {filteredQueue.map((item) => (
+                    <li key={item.item_id} className="px-1 py-2">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="w-[19ch] shrink-0 text-zinc-500">
+                          {formatFixedDateTime(item.updated_at || item.created_at)}
                         </span>
-                      ) : null}
-                      <span className="text-zinc-500">{item.item_id}</span>
-                      <button
-                        type="button"
-                        onClick={() => void publishNow(item.item_id)}
-                        disabled={item.status === "published" || queueLoading}
-                        className="rounded-lg border border-violet-500/30 px-3 py-1 text-xs text-violet-100 hover:border-violet-400 disabled:opacity-50"
-                      >
-                        {item.status === "published" ? t("queue.published") : t("queue.publishNow")}
-                      </button>
-                    </div>
-                  </article>
-                ))}
+                        <span className="shrink-0 font-semibold uppercase text-zinc-300">
+                          {item.target_channel}
+                        </span>
+                        <span className="min-w-0 truncate text-zinc-400">
+                          {t("queue.account")}: {truncateMiddle(item.account_display_name ?? "-", 22)}
+                        </span>
+                        <span className="shrink-0 text-zinc-500">
+                          {truncateMiddle(item.item_id, 14)}
+                        </span>
+                        <span
+                          className={`ml-auto shrink-0 rounded border px-2 py-0.5 uppercase ${outcomeClass(
+                            queueOutcome(item.status)
+                          )}`}
+                        >
+                          {item.status}
+                        </span>
+                        {item.status !== "published" ? (
+                          <button
+                            type="button"
+                            onClick={() => void publishNow(item.item_id)}
+                            disabled={queueLoading}
+                            className="shrink-0 rounded-lg border border-violet-500/30 px-2 py-0.5 text-xs text-violet-100 hover:border-violet-400 disabled:opacity-50"
+                          >
+                            {t("queue.publishNow")}
+                          </button>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               </div>
               </div>
-
               <div className="glass-panel space-y-3 rounded-2xl border border-cyan-500/20 p-4">
-              <h2 className="inline-flex items-center gap-2 text-lg font-medium text-cyan-100">
-                {t("audit.title")}
-                <HelpBadge tip={help("audit.title")} />
-              </h2>
-              {auditLoading ? <p className="text-zinc-400">{t("audit.loading")}</p> : null}
-              {auditError ? <p className="text-rose-300">{auditError}</p> : null}
-              {!auditLoading && !audit.length ? <p className="text-zinc-400">{t("audit.empty")}</p> : null}
-              <div className="grid gap-2 md:grid-cols-3">
-                <label className="space-y-1">
-                  <span className="text-[11px] uppercase text-zinc-500">
-                    {lang === "pl" ? "Filtr API/akcji" : "API/action filter"}
-                  </span>
-                  <select
-                    value={auditCategoryFilter}
-                    onChange={(event) =>
-                      setAuditCategoryFilter(
-                        event.target.value as
-                          | "all"
-                          | "queue"
-                          | "draft"
-                          | "integration"
-                          | "config"
-                          | "strategy"
-                          | "channel"
-                      )
-                    }
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
+                <h2 className="inline-flex items-center gap-2 text-lg font-medium text-cyan-100">
+                  {t("audit.title")}
+                  <HelpBadge tip={help("audit.title")} />
+                </h2>
+                <p className="text-sm text-zinc-400">
+                  {lang === "pl"
+                    ? "Log API/audyt jest dostępny wyłącznie w zakładce Audyt. Tutaj pokazujemy tylko log publikacji."
+                    : "API/audit log is available only in the Audit tab. This section shows publication log only."}
+                </p>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setTab("audit")}
+                    className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs text-cyan-100 transition hover:border-cyan-400"
                   >
-                    <option value="all">{lang === "pl" ? "Wszystkie akcje" : "All actions"}</option>
-                    <option value="queue">queue.*</option>
-                    <option value="draft">draft.*</option>
-                    <option value="integration">integration.*</option>
-                    <option value="config">config.*</option>
-                    <option value="strategy">strategy.*</option>
-                    <option value="channel">channel.*</option>
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-[11px] uppercase text-zinc-500">
-                    {lang === "pl" ? "Filtr statusu" : "Status filter"}
-                  </span>
-                  <select
-                    value={auditStatusFilter}
-                    onChange={(event) => setAuditStatusFilter(event.target.value)}
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
-                  >
-                    <option value="all">{lang === "pl" ? "Wszystkie statusy" : "All statuses"}</option>
-                    <option value="ok">ok</option>
-                    <option value="queued">queued</option>
-                    <option value="published">published</option>
-                    <option value="failed">failed</option>
-                    <option value="manual">manual</option>
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-[11px] uppercase text-zinc-500">
-                    {lang === "pl" ? "Wynik" : "Outcome"}
-                  </span>
-                  <select
-                    value={auditOutcomeFilter}
-                    onChange={(event) =>
-                      setAuditOutcomeFilter(event.target.value as "all" | LogOutcome)
-                    }
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-xs text-zinc-100"
-                  >
-                    <option value="all">{lang === "pl" ? "Wszystkie" : "All"}</option>
-                    <option value="success">{lang === "pl" ? "Sukces" : "Success"}</option>
-                    <option value="warning">{lang === "pl" ? "Warning" : "Warning"}</option>
-                    <option value="error">{lang === "pl" ? "Błąd" : "Error"}</option>
-                  </select>
-                </label>
-              </div>
-              <p className="text-[11px] text-zinc-500">
-                Brak auto-pollingu co kilka sekund. Odświeżenie następuje po wejściu i po operacjach użytkownika.
-              </p>
-              <div
-                className="space-y-2 pr-2"
-                style={{
-                  maxHeight: "690px",
-                  overflowY: "scroll",
-                  scrollbarGutter: "stable",
-                  overscrollBehavior: "contain",
-                }}
-              >
-                {filteredAudit.map((entry) => (
-                  <article key={entry.id} className="min-h-[44px] rounded-lg border border-zinc-800 p-3">
-                    <div className="flex flex-wrap items-center gap-3 text-xs">
-                      <span
-                        className={`rounded border px-2 py-1 uppercase ${outcomeClass(
-                          auditOutcome(entry.status)
-                        )}`}
-                      >
-                        {entry.action} / {entry.status}
-                      </span>
-                      <span className="text-zinc-500">{entry.actor}</span>
-                      <span className="text-zinc-500">{new Date(entry.timestamp).toLocaleString()}</span>
-                    </div>
-                  </article>
-                ))}
+                    {lang === "pl" ? "Przejdź do Audytu" : "Go to Audit tab"}
+                  </button>
+                </div>
               </div>
               </div>
             </div>
@@ -2931,7 +2881,7 @@ export default function BrandStudioPage() {
             </label>
           </div>
           <div
-            className="space-y-2 pr-2"
+            className="pr-2"
             style={{
               maxHeight: "690px",
               overflowY: "scroll",
@@ -2939,21 +2889,33 @@ export default function BrandStudioPage() {
               overscrollBehavior: "contain",
             }}
           >
-            {filteredAudit.map((entry) => (
-              <article key={entry.id} className="min-h-[44px] rounded-lg border border-zinc-800 p-3">
-                <div className="flex flex-wrap items-center gap-3 text-xs">
-                  <span
-                    className={`rounded border px-2 py-1 uppercase ${outcomeClass(
-                      auditOutcome(entry.status)
-                    )}`}
-                  >
-                    {entry.action} / {entry.status}
-                  </span>
-                  <span className="text-zinc-500">{entry.actor}</span>
-                  <span className="text-zinc-500">{new Date(entry.timestamp).toLocaleString()}</span>
-                </div>
-              </article>
-            ))}
+            <ul className="divide-y divide-white/5">
+              {filteredAudit.map((entry) => (
+                <li key={entry.id} className="px-1 py-2">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="w-[19ch] shrink-0 text-zinc-500">
+                      {formatFixedDateTime(entry.timestamp)}
+                    </span>
+                    <span className="shrink-0 font-semibold uppercase text-zinc-300">
+                      {entry.action}
+                    </span>
+                    <span className="min-w-0 truncate text-zinc-400">
+                      {truncateMiddle(entry.actor || "-", 20)}
+                    </span>
+                    <span className="shrink-0 text-zinc-500">
+                      {truncateMiddle(entry.id, 14)}
+                    </span>
+                    <span
+                      className={`ml-auto shrink-0 rounded border px-2 py-0.5 uppercase ${outcomeClass(
+                        auditOutcome(entry.status)
+                      )}`}
+                    >
+                      {entry.status}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
       ) : null}
