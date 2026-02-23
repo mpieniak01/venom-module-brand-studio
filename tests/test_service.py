@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1371,3 +1372,41 @@ def test_queue_draft_supporting_variant_selection_with_multiple_accounts(
     # Each queue item should have the content from its supporting account's variant
     assert queue_item_1.payload == s1_variant.content
     assert queue_item_2.payload == s2_variant.content
+
+
+def test_legacy_accounts_state_is_visible_in_credential_profiles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    accounts_file = tmp_path / "accounts-state.json"
+    monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
+    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    accounts_file.write_text(
+        json.dumps(
+            {
+                "devto": [
+                    {
+                        "account_id": "devto-legacy-1",
+                        "channel": "devto",
+                        "display_name": "Legacy Devto",
+                        "identity_handle": "legacy-devto",
+                        "enabled": True,
+                        "is_default": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = BrandStudioService()
+    response = service.credential_profiles(channel="devto")
+
+    assert response.count == 1
+    profile = response.items[0]
+    assert profile.profile_id == "devto-legacy-1"
+    assert profile.channel == "devto"
+    assert profile.identity_display_name == "Legacy Devto"
+    assert profile.identity_handle == "legacy-devto"
+    assert profile.role == "primary_brand"

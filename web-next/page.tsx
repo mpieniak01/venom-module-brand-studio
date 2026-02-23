@@ -169,6 +169,8 @@ type CredentialProfileEditDraft = {
   supports_profile_id: string;
 };
 
+type CreateWizardStep = 1 | 2 | 3 | 4;
+
 type KeywordType = "brand_core" | "brand_product" | "brand_person" | "risk_term" | "competitor_context";
 type SearchResultClass = "owned_source" | "brand_mention_positive" | "brand_mention_neutral" | "brand_mention_risk" | "unrelated";
 type CampaignStatus = "draft" | "ready" | "running" | "completed" | "failed" | "cancelled";
@@ -534,6 +536,8 @@ export default function BrandStudioPage() {
   const [newProfileTarget, setNewProfileTarget] = useState("");
   const [newProfileSecret, setNewProfileSecret] = useState("");
   const [newProfileSupportsId, setNewProfileSupportsId] = useState("");
+  const [createWizardStep, setCreateWizardStep] = useState<CreateWizardStep>(1);
+  const [createWizardLastTest, setCreateWizardLastTest] = useState<string | null>(null);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editingProfileDraft, setEditingProfileDraft] = useState<CredentialProfileEditDraft | null>(
     null
@@ -1294,6 +1298,44 @@ export default function BrandStudioPage() {
     [loadAudit, loadCandidates, loadConfig]
   );
 
+  const nextCreateWizardStep = useCallback(() => {
+    if (createWizardStep === 2 && newProfileRole === "supporting_brand" && !newProfileSupportsId) {
+      setIntegrationError(t("accounts.validationPrimaryProfile"));
+      return;
+    }
+    setCreateWizardStep((previous) => {
+      if (previous === 4) {
+        return 4;
+      }
+      return (previous + 1) as CreateWizardStep;
+    });
+    setIntegrationError(null);
+    setCreateWizardLastTest(null);
+  }, [createWizardStep, newProfileRole, newProfileSupportsId, t]);
+
+  const previousCreateWizardStep = useCallback(() => {
+    setCreateWizardStep((previous) => {
+      if (previous === 1) {
+        return 1;
+      }
+      return (previous - 1) as CreateWizardStep;
+    });
+    setIntegrationError(null);
+    setCreateWizardLastTest(null);
+  }, []);
+
+  const resetCreateWizardForm = useCallback(() => {
+    setNewProfileChannel("github");
+    setNewProfileRole("primary_brand");
+    setNewProfileAuthMode("api_key");
+    setNewProfileName("");
+    setNewProfileHandle("");
+    setNewProfileTarget("");
+    setNewProfileSecret("");
+    setNewProfileSupportsId("");
+    setCreateWizardStep(1);
+  }, []);
+
   const startEditCredentialProfile = useCallback((profile: CredentialProfile) => {
     setEditingProfileId(profile.profile_id);
     setEditingProfileDraft({
@@ -1327,11 +1369,7 @@ export default function BrandStudioPage() {
       editingProfileDraft.role === "supporting_brand" &&
       !editingProfileDraft.supports_profile_id
     ) {
-      setIntegrationError(
-        lang === "pl"
-          ? "Wybierz profil główny do wsparcia."
-          : "Select a primary profile to support."
-      );
+      setIntegrationError(t("accounts.validationPrimaryProfile"));
       return;
     }
 
@@ -1373,22 +1411,25 @@ export default function BrandStudioPage() {
     } finally {
       setIntegrationLoading(false);
     }
-  }, [editingProfileDraft, editingProfileId, lang, loadAudit, loadCredentialProfiles, t]);
+  }, [editingProfileDraft, editingProfileId, loadAudit, loadCredentialProfiles, t]);
 
   const createCredentialProfile = useCallback(async () => {
+    if (createWizardStep !== 4) {
+      setIntegrationError(t("accounts.wizardStepComplete"));
+      return;
+    }
     const displayName = newProfileName.trim();
     if (!displayName) {
       setIntegrationError(t("accounts.validationName"));
       return;
     }
     if (newProfileRole === "supporting_brand" && !newProfileSupportsId) {
-      setIntegrationError(
-        lang === "pl" ? "Wybierz profil główny do wsparcia." : "Select a primary profile to support."
-      );
+      setIntegrationError(t("accounts.validationPrimaryProfile"));
       return;
     }
     setIntegrationLoading(true);
     setIntegrationError(null);
+    setCreateWizardLastTest(null);
     try {
       const response = await fetch("/api/v1/brand-studio/credential-profiles", {
         method: "POST",
@@ -1412,12 +1453,35 @@ export default function BrandStudioPage() {
       if (!response.ok) {
         throw new Error(await extractErrorMessage(response));
       }
-      await response.json() as CredentialProfileResponse;
-      setNewProfileName("");
-      setNewProfileHandle("");
-      setNewProfileTarget("");
-      setNewProfileSecret("");
-      setNewProfileSupportsId("");
+      const created = (await response.json()) as CredentialProfileResponse;
+      const createdProfileId = created.item.profile_id;
+
+      const testResponse = await fetch(
+        `/api/v1/brand-studio/credential-profiles/${createdProfileId}/test`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Authenticated-User": "local-user",
+          },
+        }
+      );
+      if (!testResponse.ok) {
+        throw new Error(await extractErrorMessage(testResponse));
+      }
+      const testPayload = (await testResponse.json()) as CredentialProfileTestResponse;
+      const testSummary = `${testPayload.status}: ${testPayload.message}`;
+      setIntegrationTests((previous) => ({
+        ...previous,
+        [createdProfileId]: testSummary,
+      }));
+      setCreateWizardLastTest(`${created.item.identity_display_name} -> ${testSummary}`);
+
+      if (!testPayload.success) {
+        setIntegrationError(`${t("accounts.wizardCreateTestFailed")} ${testPayload.message}`);
+      }
+
+      resetCreateWizardForm();
       await loadCredentialProfiles();
       await loadAudit();
     } catch (err) {
@@ -1426,7 +1490,7 @@ export default function BrandStudioPage() {
       setIntegrationLoading(false);
     }
   }, [
-    lang,
+    createWizardStep,
     loadAudit,
     loadCredentialProfiles,
     newProfileAuthMode,
@@ -1437,6 +1501,7 @@ export default function BrandStudioPage() {
     newProfileSecret,
     newProfileSupportsId,
     newProfileTarget,
+    resetCreateWizardForm,
     t,
   ]);
 
@@ -2453,127 +2518,168 @@ export default function BrandStudioPage() {
               {t("tabs.integrations")}
               <HelpBadge tip={help("tabs.integrations")} />
             </h3>
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">
-                  {lang === "pl" ? "Krok 1: Kanał" : "Step 1: Channel"}
-                </span>
-                <select
-                  value={newProfileChannel}
-                  onChange={(event) => setNewProfileChannel(event.target.value as PublishChannel)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                >
-                  {CHANNELS.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">
-                  {lang === "pl" ? "Krok 2: Rola" : "Step 2: Role"}
-                </span>
-                <select
-                  value={newProfileRole}
-                  onChange={(event) => setNewProfileRole(event.target.value as CredentialProfileRole)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                >
-                  <option value="primary_brand">primary_brand</option>
-                  <option value="supporting_brand">supporting_brand</option>
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">
-                  {lang === "pl" ? "Krok 3: Auth" : "Step 3: Auth"}
-                </span>
-                <select
-                  value={newProfileAuthMode}
-                  onChange={(event) =>
-                    setNewProfileAuthMode(event.target.value as CredentialProfileAuthMode)
-                  }
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                >
-                  <option value="api_key">api_key</option>
-                  <option value="oauth">oauth</option>
-                  <option value="login_password">login_password</option>
-                  <option value="username_only">username_only</option>
-                  <option value="none">none</option>
-                </select>
-              </label>
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">{t("accounts.displayName")}</span>
-                <input
-                  value={newProfileName}
-                  onChange={(event) => setNewProfileName(event.target.value)}
-                  placeholder={t("accounts.displayName")}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">
-                  {lang === "pl" ? "Login / handle" : "Login / handle"}
-                </span>
-                <input
-                  value={newProfileHandle}
-                  onChange={(event) => setNewProfileHandle(event.target.value)}
-                  placeholder={lang === "pl" ? "@nazwa lub login" : "@handle or login"}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">{t("accounts.target")}</span>
-                <input
-                  value={newProfileTarget}
-                  onChange={(event) => setNewProfileTarget(event.target.value)}
-                  placeholder={t("accounts.target")}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-[11px] uppercase text-zinc-500">
-                  {lang === "pl" ? "Sekret (opcjonalnie)" : "Secret (optional)"}
-                </span>
-                <input
-                  type="password"
-                  value={newProfileSecret}
-                  onChange={(event) => setNewProfileSecret(event.target.value)}
-                  placeholder={lang === "pl" ? "token / hasło" : "token / password"}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
-              {newProfileRole === "supporting_brand" ? (
-                <label className="space-y-1">
-                  <span className="text-[11px] uppercase text-zinc-500">
-                    {lang === "pl" ? "Profil główny" : "Primary profile"}
-                  </span>
+            <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/40 p-3">
+              <p className="text-xs text-zinc-400">
+                {t("accounts.wizardProgress")} {createWizardStep}/4
+              </p>
+              {createWizardStep === 1 ? (
+                <label className="mt-3 block space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">{t("accounts.step1Channel")}</span>
                   <select
-                    value={newProfileSupportsId}
-                    onChange={(event) => setNewProfileSupportsId(event.target.value)}
+                    value={newProfileChannel}
+                    onChange={(event) => setNewProfileChannel(event.target.value as PublishChannel)}
                     className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
                   >
-                    <option value="">{lang === "pl" ? "Wybierz profil" : "Select profile"}</option>
-                    {supportingCandidates.map((item) => (
-                      <option key={item.profile_id} value={item.profile_id}>
-                        {item.identity_display_name}
+                    {CHANNELS.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
                       </option>
                     ))}
                   </select>
                 </label>
               ) : null}
-            </div>
-            <div className="flex items-end">
-              <button
-                type="button"
-                onClick={() => void createCredentialProfile()}
-                disabled={integrationLoading}
-                className="rounded-lg border border-emerald-500/40 px-4 py-2 text-xs text-emerald-100 disabled:opacity-50"
-              >
-                {t("accounts.add")}
-              </button>
+              {createWizardStep === 2 ? (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-[11px] uppercase text-zinc-500">{t("accounts.step2Role")}</span>
+                    <select
+                      value={newProfileRole}
+                      onChange={(event) => {
+                        const role = event.target.value as CredentialProfileRole;
+                        setNewProfileRole(role);
+                        if (role === "primary_brand") {
+                          setNewProfileSupportsId("");
+                        }
+                      }}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                    >
+                      <option value="primary_brand">primary_brand</option>
+                      <option value="supporting_brand">supporting_brand</option>
+                    </select>
+                  </label>
+                  {newProfileRole === "supporting_brand" ? (
+                    <label className="space-y-1">
+                      <span className="text-[11px] uppercase text-zinc-500">
+                        {t("accounts.primaryProfile")}
+                      </span>
+                      <select
+                        value={newProfileSupportsId}
+                        onChange={(event) => setNewProfileSupportsId(event.target.value)}
+                        className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                      >
+                        <option value="">{t("accounts.selectProfile")}</option>
+                        {supportingCandidates.map((item) => (
+                          <option key={item.profile_id} value={item.profile_id}>
+                            {item.identity_display_name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
+              {createWizardStep === 3 ? (
+                <label className="mt-3 block space-y-1">
+                  <span className="text-[11px] uppercase text-zinc-500">{t("accounts.step3Auth")}</span>
+                  <select
+                    value={newProfileAuthMode}
+                    onChange={(event) =>
+                      setNewProfileAuthMode(event.target.value as CredentialProfileAuthMode)
+                    }
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  >
+                    <option value="api_key">api_key</option>
+                    <option value="oauth">oauth</option>
+                    <option value="login_password">login_password</option>
+                    <option value="username_only">username_only</option>
+                    <option value="none">none</option>
+                  </select>
+                </label>
+              ) : null}
+              {createWizardStep === 4 ? (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-[11px] uppercase text-zinc-500">{t("accounts.displayName")}</span>
+                    <input
+                      value={newProfileName}
+                      onChange={(event) => setNewProfileName(event.target.value)}
+                      placeholder={t("accounts.displayName")}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[11px] uppercase text-zinc-500">{t("accounts.handle")}</span>
+                    <input
+                      value={newProfileHandle}
+                      onChange={(event) => setNewProfileHandle(event.target.value)}
+                      placeholder={t("accounts.handlePlaceholder")}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[11px] uppercase text-zinc-500">{t("accounts.target")}</span>
+                    <input
+                      value={newProfileTarget}
+                      onChange={(event) => setNewProfileTarget(event.target.value)}
+                      placeholder={t("accounts.target")}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[11px] uppercase text-zinc-500">{t("accounts.secretOptional")}</span>
+                    <input
+                      type="password"
+                      value={newProfileSecret}
+                      onChange={(event) => setNewProfileSecret(event.target.value)}
+                      placeholder={t("accounts.secretPlaceholder")}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                    />
+                  </label>
+                </div>
+              ) : null}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => previousCreateWizardStep()}
+                  disabled={integrationLoading || createWizardStep === 1}
+                  className="rounded-lg border border-zinc-600/70 px-3 py-2 text-xs text-zinc-200 disabled:opacity-50"
+                >
+                  {t("accounts.wizardBack")}
+                </button>
+                {createWizardStep < 4 ? (
+                  <button
+                    type="button"
+                    onClick={() => nextCreateWizardStep()}
+                    disabled={integrationLoading}
+                    className="rounded-lg border border-cyan-500/40 px-3 py-2 text-xs text-cyan-100 disabled:opacity-50"
+                  >
+                    {t("accounts.wizardNext")}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void createCredentialProfile()}
+                    disabled={integrationLoading}
+                    className="rounded-lg border border-emerald-500/40 px-4 py-2 text-xs text-emerald-100 disabled:opacity-50"
+                  >
+                    {t("accounts.wizardCreateAndTest")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => resetCreateWizardForm()}
+                  disabled={integrationLoading}
+                  className="rounded-lg border border-zinc-600/70 px-3 py-2 text-xs text-zinc-200 disabled:opacity-50"
+                >
+                  {t("accounts.wizardReset")}
+                </button>
+              </div>
             </div>
             {integrationLoading ? <p className="text-zinc-400">{t("integrations.loading")}</p> : null}
             {integrationError ? <p className="text-rose-300">{integrationError}</p> : null}
+            {createWizardLastTest ? (
+              <p className="text-emerald-200">{t("accounts.wizardLastTest")} {createWizardLastTest}</p>
+            ) : null}
           </div>
 
           <div className="glass-panel space-y-3 rounded-2xl border border-violet-500/20 p-4">
