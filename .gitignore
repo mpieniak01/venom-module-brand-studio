@@ -9,6 +9,7 @@ coverage.xml
 build/
 dist/
 .venv/
+.venv*/
 .env
 .env.*
 node_modules/
