@@ -1,5 +1,5 @@
 PYTHON ?= python3
-PYTHONPATH ?= ../..
+PYTHONPATH ?= $(if $(wildcard venom-core/venom_core),venom-core,$(if $(wildcard ../venom/venom_core),../venom,$(if $(wildcard ../../venom_core),../..,../..)))
 PYTEST ?= PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest
 
 .PHONY: pr-fast check-new-code-coverage lint test

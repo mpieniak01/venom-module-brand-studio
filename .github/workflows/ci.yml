@@ -12,6 +12,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout Venom core
+        uses: actions/checkout@v4
+        with:
+          repository: mpieniak01/Venom
+          path: venom-core
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
