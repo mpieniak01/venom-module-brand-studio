@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from venom_core.config import SETTINGS as CORE_SETTINGS
 
 from venom_module_brand_studio.api.routes import router
 from venom_module_brand_studio.api.schemas import ChannelAccountCreateRequest
@@ -16,9 +17,7 @@ AUTH_HEADERS = {"X-Authenticated-User": "mpieniak", "X-Autonomy-Level": "20"}
 def isolated_runtime_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FEATURE_BRAND_STUDIO", "true")
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path))
     service_module._service = service_module.BrandStudioService()
 
 
@@ -33,6 +32,15 @@ def test_health_route() -> None:
     response = client.get("/api/v1/brand-studio/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "module": "brand_studio"}
+
+
+def test_mutation_route_blocked_in_preprod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(CORE_SETTINGS, "ENVIRONMENT_ROLE", "preprod")
+    monkeypatch.setattr(CORE_SETTINGS, "ALLOW_DATA_MUTATION", False)
+    client = build_client()
+    response = client.post("/api/v1/brand-studio/config/refresh", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    assert "ALLOW_DATA_MUTATION=0" in response.json()["detail"]
 
 
 def test_list_candidates_route() -> None:

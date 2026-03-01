@@ -89,27 +89,24 @@ BRAND_STUDIO_DISCOVERY_MODE=hybrid
 BRAND_STUDIO_RSS_URLS=https://example.org/feed.xml,https://example.org/another-feed.xml
 BRAND_STUDIO_CACHE_TTL_SECONDS=1800
 BRAND_STUDIO_MONITORING_SCHEDULE_CRON=*/30 * * * *
-BRAND_STUDIO_MONITORING_FILE=/tmp/venom-brand-studio/monitoring-state.json
+BRAND_STUDIO_DATA_ROOT=/tmp/venom-brand-studio
 BRAND_STUDIO_GOOGLE_CSE_API_KEY=<api-key>
 BRAND_STUDIO_GOOGLE_CSE_CX=<search-engine-id>
-    BRAND_STUDIO_CACHE_FILE=/tmp/venom-brand-studio/candidates-cache.json
-    BRAND_STUDIO_STATE_FILE=/tmp/venom-brand-studio/runtime-state.json
-    BRAND_STUDIO_ACCOUNTS_FILE=/tmp/venom-brand-studio/accounts-state.json
-    GITHUB_TOKEN_BRAND=<token>
-    BRAND_TARGET_REPO=mpieniak01/mpieniak01
-    BRAND_GITHUB_PUBLISH_MODE=commit
-    BRAND_GITHUB_BASE_BRANCH=main
-    DEVTO_API_KEY=<token>
-    REDDIT_CLIENT_ID=<client-id>
-    REDDIT_CLIENT_SECRET=<client-secret>
-    REDDIT_REFRESH_TOKEN=<refresh-token>
-    REDDIT_USER_AGENT=venom-brand-studio/1.0 by /u/your-account
+GITHUB_TOKEN_BRAND=<token>
+BRAND_TARGET_REPO=mpieniak01/mpieniak01
+BRAND_GITHUB_PUBLISH_MODE=commit
+BRAND_GITHUB_BASE_BRANCH=main
+DEVTO_API_KEY=<token>
+REDDIT_CLIENT_ID=<client-id>
+REDDIT_CLIENT_SECRET=<client-secret>
+REDDIT_REFRESH_TOKEN=<refresh-token>
+REDDIT_USER_AGENT=venom-brand-studio/1.0 by /u/your-account
 ```
 
 After changing env values, restart Venom services.
 
 ### Discovery cache behavior
-1. Candidate discovery results are cached locally in `BRAND_STUDIO_CACHE_FILE`.
+1. Candidate discovery results are cached locally in `BRAND_STUDIO_DATA_ROOT/candidates-cache.json`.
 2. Reopening the screen does not trigger external APIs while cache is fresh (`BRAND_STUDIO_CACHE_TTL_SECONDS`).
 3. After backend restart, cached candidates are restored from the local file.
 4. Cache is local-only (not pushed anywhere unless you manually commit that file path in your module repo).
@@ -128,7 +125,7 @@ After changing env values, restart Venom services.
    - `TRAFFIC_CONTROL_LOG_DIR=/tmp/venom/traffic-control`.
 
 ### Canonical audit stream publishing
-1. Module audit entries are still persisted locally in `BRAND_STUDIO_STATE_FILE`.
+1. Module audit entries are persisted locally in `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
 2. Each new audit entry is also published (best-effort) to core endpoint `/api/v1/audit/stream`.
 3. Queue events for `github` channel are marked as technical (`core.technical.github_publish`) for visibility in core audit.
 4. Publishing can be controlled by:
@@ -139,10 +136,10 @@ After changing env values, restart Venom services.
    - `BRAND_STUDIO_AUDIT_INGEST_TOKEN=<optional token>`
 
 ### Runtime state persistence
-1. Queue and audit are persisted in `BRAND_STUDIO_STATE_FILE`.
+1. Queue and audit are persisted in `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
 2. After backend restart, queue and audit entries are restored from local state file.
-3. Channel accounts and account telemetry are persisted in `BRAND_STUDIO_ACCOUNTS_FILE`.
-4. Draft bundles and draft-generation cache are persisted in `BRAND_STUDIO_STATE_FILE`.
+3. Channel accounts and account telemetry are persisted in `BRAND_STUDIO_DATA_ROOT/accounts-state.json`.
+4. Draft bundles and draft-generation cache are persisted in `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
 
 ### Draft generation cache (LLM stability)
 1. Repeated `POST /drafts/generate` with the same input returns cached draft by default.
@@ -157,7 +154,7 @@ After changing env values, restart Venom services.
      - supported values: `@hourly`, `@daily`, `@weekly`, `*/N * * * *`,
    - `BRAND_STUDIO_MONITORING_SCHEDULE_MINUTES` (fallback when CRON is not set).
 3. Scheduled scans are triggered lazily on monitoring reads (`/monitoring/summary`, `/monitoring/results`) when interval is due.
-4. Monitoring entities (keywords/sources/scans/campaigns/idempotency keys) are persisted in `BRAND_STUDIO_MONITORING_FILE`.
+4. Monitoring entities are persisted in `BRAND_STUDIO_DATA_ROOT/monitoring-state.json`.
 
 ### Channel capability matrix (161_C)
 1. `github` / `blog`: real publish connector.

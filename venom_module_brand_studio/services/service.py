@@ -13,6 +13,8 @@ from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+from venom_core.core.module_data_policy import resolve_module_data_root
+
 from venom_module_brand_studio.api.schemas import (
     BrandBaseSource,
     BrandBaseSourceCreateRequest,
@@ -80,6 +82,7 @@ from venom_module_brand_studio.services.audit_client import BrandStudioAuditPubl
 from venom_module_brand_studio.services.llm_client import BrandStudioLLMClient
 
 logger = logging.getLogger(__name__)
+MODULE_ID = "brand_studio"
 
 
 def _draft_cache_ttl_seconds() -> int:
@@ -406,22 +409,21 @@ class BrandStudioService:
         self._load_monitoring_state()
 
     def _resolve_cache_file(self) -> Path:
-        raw = (os.getenv("BRAND_STUDIO_CACHE_FILE") or "").strip()
-        if raw:
-            return Path(raw)
-        return Path("/tmp/venom-brand-studio/candidates-cache.json")
+        return self._module_data_root() / "candidates-cache.json"
 
     def _resolve_state_file(self) -> Path:
-        raw = (os.getenv("BRAND_STUDIO_STATE_FILE") or "").strip()
-        if raw:
-            return Path(raw)
-        return Path("/tmp/venom-brand-studio/runtime-state.json")
+        return self._module_data_root() / "runtime-state.json"
 
     def _resolve_accounts_file(self) -> Path:
-        raw = (os.getenv("BRAND_STUDIO_ACCOUNTS_FILE") or "").strip()
-        if raw:
-            return Path(raw)
-        return Path("/tmp/venom-brand-studio/accounts-state.json")
+        return self._module_data_root() / "accounts-state.json"
+
+    def _module_data_root(self) -> Path:
+        raw = (os.getenv("BRAND_STUDIO_DATA_ROOT") or "").strip()
+        base_dir = Path(raw) if raw else None
+        return resolve_module_data_root(
+            module_id=MODULE_ID,
+            base_dir=base_dir,
+        )
 
     def _init_default_strategy(self) -> None:
         mode = (os.getenv("BRAND_STUDIO_DISCOVERY_MODE") or "hybrid").strip().lower()
@@ -3569,11 +3571,7 @@ class BrandStudioService:
     # ---- Monitoring persistence ----
 
     def _resolve_monitoring_file(self) -> Path:
-        raw = (os.getenv("BRAND_STUDIO_MONITORING_FILE") or "").strip()
-        if raw:
-            return Path(raw)
-        state_file = self._resolve_state_file()
-        return state_file.parent / "monitoring-state.json"
+        return self._module_data_root() / "monitoring-state.json"
 
     def _persist_monitoring_state(self) -> None:
         try:

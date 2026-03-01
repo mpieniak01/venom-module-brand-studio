@@ -5,7 +5,17 @@
   "backend": {
     "router_import": "venom_module_brand_studio.api.routes:router",
     "module_api_version": "1.0.0",
-    "min_core_version": "1.5.0"
+    "min_core_version": "1.5.0",
+    "data_policy": {
+      "storage_mode": "core_prefixed",
+      "mutation_guard": "core_environment_policy",
+      "state_files": [
+        "candidates-cache.json",
+        "runtime-state.json",
+        "accounts-state.json",
+        "monitoring-state.json"
+      ]
+    }
   },
   "frontend": {
     "nav_path": "/brand-studio",
