@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from venom_core.core.module_data_policy import resolve_module_state_path
 from venom_module_brand_studio.api.schemas import (
     ChannelAccountCreateRequest,
     ChannelAccountUpdateRequest,
@@ -23,9 +24,15 @@ from venom_module_brand_studio.services.service import (
 @pytest.fixture(autouse=True)
 def isolated_module_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path))
+
+
+def _module_state_file(tmp_path: Path, file_name: str) -> Path:
+    return resolve_module_state_path(
+        module_id="brand_studio",
+        file_name=file_name,
+        base_dir=tmp_path,
+    )
 
 
 def test_canonical_url_removes_tracking_params() -> None:
@@ -37,8 +44,8 @@ def test_canonical_url_removes_tracking_params() -> None:
 
 def test_add_audit_publishes_entry_to_core_stream(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
 
     service = BrandStudioService()
     published = []
@@ -65,8 +72,8 @@ def test_add_audit_keeps_local_entry_when_core_publish_fails(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
 
     service = BrandStudioService()
 
@@ -104,8 +111,8 @@ def test_candidates_are_scored_and_deduplicated(monkeypatch) -> None:
 
 def test_candidates_filters_work_for_lang_and_channel(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
     service = BrandStudioService()
 
     pl_items, _ = service.list_candidates(channel=None, lang="pl", limit=50, min_score=0.0)
@@ -167,8 +174,8 @@ def test_queue_and_publish_with_github_connector(monkeypatch) -> None:
 def test_live_mode_uses_adapter_results(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "live")
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
 
     def fake_rss(_urls):
         return [
@@ -199,8 +206,8 @@ def test_cache_ttl_avoids_repeated_external_fetch(monkeypatch, tmp_path: Path) -
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "live")
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_TTL_SECONDS", "3600")
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
 
     calls = {"rss": 0}
 
@@ -231,12 +238,11 @@ def test_cache_ttl_avoids_repeated_external_fetch(monkeypatch, tmp_path: Path) -
 
 
 def test_cache_survives_service_restart(monkeypatch, tmp_path: Path) -> None:
-    cache_file = tmp_path / "candidates-cache.json"
+    cache_file = _module_state_file(tmp_path, "candidates-cache.json")
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "live")
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
     monkeypatch.setenv("BRAND_STUDIO_CACHE_TTL_SECONDS", "3600")
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path))
 
     def fake_rss_initial(_urls):
         return [
@@ -279,11 +285,9 @@ def test_cache_survives_service_restart(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_queue_and_audit_state_survive_service_restart(monkeypatch, tmp_path: Path) -> None:
-    state_file = tmp_path / "runtime-state.json"
-    cache_file = tmp_path / "candidates-cache.json"
+    state_file = _module_state_file(tmp_path, "runtime-state.json")
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path))
 
     service = BrandStudioService()
     items, _ = service.list_candidates(channel=None, lang=None, limit=5, min_score=0.0)
@@ -325,8 +329,8 @@ def test_strategy_lifecycle_and_config_persistence(monkeypatch, tmp_path: Path) 
     state_file = tmp_path / "runtime-state.json"
     cache_file = tmp_path / "candidates-cache.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
 
     service = BrandStudioService()
     active_id, active = service.config()
@@ -369,8 +373,8 @@ def test_integrations_status_and_test(monkeypatch, tmp_path: Path) -> None:
     cache_file = tmp_path / "candidates-cache.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "live")
     monkeypatch.setenv("BRAND_STUDIO_RSS_URLS", "https://example.org/feed.xml")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
     monkeypatch.delenv("GITHUB_TOKEN_BRAND", raising=False)
     monkeypatch.delenv("BRAND_TARGET_REPO", raising=False)
 
@@ -417,9 +421,9 @@ def test_channel_accounts_lifecycle_and_queue_binding(monkeypatch, tmp_path: Pat
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(accounts_file))
 
     service = BrandStudioService()
     created = service.create_channel_account(
@@ -484,9 +488,9 @@ def test_queue_draft_raises_for_unknown_explicit_account_id(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
     service = BrandStudioService()
 
     items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
@@ -517,9 +521,9 @@ def test_publish_devto_channel_with_connector(monkeypatch, tmp_path: Path) -> No
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(accounts_file))
 
     service = BrandStudioService()
     account = service.create_channel_account(
@@ -580,9 +584,9 @@ def test_publish_reddit_channel_with_connector(monkeypatch, tmp_path: Path) -> N
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(accounts_file))
     monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
     monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
     monkeypatch.setenv("REDDIT_REFRESH_TOKEN", "refresh")
@@ -651,9 +655,9 @@ def test_publish_fails_for_unconfigured_hashnode_channel(monkeypatch, tmp_path: 
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(accounts_file))
 
     service = BrandStudioService()
     account = service.create_channel_account(
@@ -716,9 +720,9 @@ def test_publish_additional_channels_with_connectors(
     cache_file = tmp_path / "candidates-cache.json"
     accounts_file = tmp_path / "accounts-state.json"
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(state_file))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(cache_file))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(state_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(cache_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(accounts_file))
     monkeypatch.setenv(env_name, env_value)
 
     service = BrandStudioService()
@@ -783,9 +787,9 @@ def test_publish_additional_channels_with_connectors(
 
 def test_channel_account_role_fields(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
     primary = service.create_channel_account(
@@ -822,9 +826,9 @@ def test_channel_account_role_fields(monkeypatch, tmp_path: Path) -> None:
 
 def test_generate_draft_supporting_variant_attribution(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
     primary = service.create_channel_account(
@@ -876,8 +880,8 @@ def test_ensure_supporting_attribution_is_case_insensitive_and_checks_url(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
     service = BrandStudioService()
 
     url = "https://example.org/source"
@@ -896,8 +900,8 @@ def test_ensure_supporting_attribution_is_case_insensitive_and_checks_url(
 
 def test_build_supporting_prompt_truncates_primary_content(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
     service = BrandStudioService()
     long_primary = "A" * 2000
     prompt = service._build_supporting_prompt(
@@ -917,9 +921,9 @@ def test_build_supporting_prompt_truncates_primary_content(monkeypatch, tmp_path
 def test_generate_draft_uses_llm_when_enabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
     primary = service.create_channel_account(
@@ -972,8 +976,8 @@ def test_generate_draft_uses_llm_when_enabled(monkeypatch, tmp_path: Path) -> No
 def test_generate_draft_llm_error_falls_back_and_adds_audit(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
 
     service = BrandStudioService()
 
@@ -1005,8 +1009,8 @@ def test_generate_draft_returns_cached_bundle_by_default(monkeypatch, tmp_path: 
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
     monkeypatch.setenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS", "3600")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
 
     service = BrandStudioService()
     calls = {"count": 0}
@@ -1044,8 +1048,8 @@ def test_generate_draft_refresh_true_creates_new_version(monkeypatch, tmp_path: 
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
     monkeypatch.setenv("BRAND_STUDIO_LLM_ENABLED", "true")
     monkeypatch.setenv("BRAND_STUDIO_DRAFT_CACHE_TTL_SECONDS", "3600")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
 
     service = BrandStudioService()
     calls = {"count": 0}
@@ -1085,9 +1089,9 @@ def test_process_scheduled_queue_auto_publishes_due_items(monkeypatch, tmp_path:
     from venom_module_brand_studio.services.service import _utcnow
 
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
     items, _ = service.list_candidates(channel=None, lang=None, limit=2, min_score=0.0)
@@ -1129,9 +1133,9 @@ def test_process_scheduled_queue_skips_future_and_manual_items(
     from venom_module_brand_studio.services.service import _utcnow
 
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
     items, _ = service.list_candidates(channel=None, lang=None, limit=2, min_score=0.0)
@@ -1186,8 +1190,8 @@ def test_queue_draft_stores_scheduled_at_and_publish_mode(monkeypatch, tmp_path:
     from venom_module_brand_studio.services.service import _utcnow
 
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
 
     service = BrandStudioService()
     items, _ = service.list_candidates(channel=None, lang=None, limit=1, min_score=0.0)
@@ -1219,9 +1223,9 @@ def test_create_supporting_account_validates_supports_account_id(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
 
@@ -1281,9 +1285,9 @@ def test_queue_draft_supporting_variant_selection_with_multiple_accounts(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(tmp_path / "accounts-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "candidates-cache.json"))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path / "accounts-state.json"))
 
     service = BrandStudioService()
 
@@ -1377,11 +1381,10 @@ def test_queue_draft_supporting_variant_selection_with_multiple_accounts(
 def test_legacy_accounts_state_is_visible_in_credential_profiles(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    accounts_file = tmp_path / "accounts-state.json"
+    accounts_file = _module_state_file(tmp_path, "accounts-state.json")
     monkeypatch.setenv("BRAND_STUDIO_DISCOVERY_MODE", "stub")
-    monkeypatch.setenv("BRAND_STUDIO_STATE_FILE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("BRAND_STUDIO_CACHE_FILE", str(tmp_path / "candidates-cache.json"))
-    monkeypatch.setenv("BRAND_STUDIO_ACCOUNTS_FILE", str(accounts_file))
+    monkeypatch.setenv("BRAND_STUDIO_DATA_ROOT", str(tmp_path))
+    accounts_file.parent.mkdir(parents=True, exist_ok=True)
     accounts_file.write_text(
         json.dumps(
             {

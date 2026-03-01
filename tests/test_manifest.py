@@ -11,6 +11,12 @@ def test_module_manifest_required_fields() -> None:
     assert manifest["backend"]["router_import"] == "venom_module_brand_studio.api.routes:router"
     assert manifest["backend"]["module_api_version"]
     assert manifest["backend"]["min_core_version"]
+    assert manifest["backend"]["data_policy"]["storage_mode"] == "core_prefixed"
+    assert (
+        manifest["backend"]["data_policy"]["mutation_guard"]
+        == "core_environment_policy"
+    )
+    assert "runtime-state.json" in manifest["backend"]["data_policy"]["state_files"]
     assert manifest["frontend"]["nav_path"] == "/brand-studio"
     assert manifest["frontend"]["feature_flag"] == "NEXT_PUBLIC_FEATURE_BRAND_STUDIO"
     assert manifest["frontend"]["nav_label"] == "Brand Studio"

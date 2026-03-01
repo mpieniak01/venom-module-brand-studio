@@ -4,7 +4,8 @@ import os
 from contextlib import contextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from venom_core.core.module_data_policy import ensure_module_mutation_allowed
 
 from venom_module_brand_studio.api.schemas import (
     AuditResponse,
@@ -59,7 +60,25 @@ from venom_module_brand_studio.services.service import (
     health_payload,
 )
 
-router = APIRouter(prefix="/api/v1/brand-studio", tags=["brand-studio"])
+def _module_data_guard(request: Request) -> None:
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        try:
+            ensure_module_mutation_allowed(
+                module_id="brand_studio",
+                operation_name=f"{request.method.lower()}:{request.url.path}",
+            )
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(exc),
+            ) from exc
+
+
+router = APIRouter(
+    prefix="/api/v1/brand-studio",
+    tags=["brand-studio"],
+    dependencies=[Depends(_module_data_guard)],
+)
 
 
 @contextmanager
@@ -150,11 +169,16 @@ def _autonomy_guard(
     except ValueError:
         required_level = 20
 
-    # Preferred path: shared core PermissionGuard from Venom runtime.
+    # Preferred path: explicit per-request autonomy context from host.
+    # If header is absent, fallback to shared core PermissionGuard state.
     try:
         from venom_core.core.permission_guard import permission_guard  # type: ignore
 
-        current_level = int(permission_guard.get_current_level())
+        current_level = (
+            x_autonomy_level
+            if x_autonomy_level is not None
+            else int(permission_guard.get_current_level())
+        )
         if current_level < required_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
