@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from venom_core.config import SETTINGS as CORE_SETTINGS
+
 from venom_module_brand_studio.api.routes import router
 from venom_module_brand_studio.api.schemas import ChannelAccountCreateRequest
 from venom_module_brand_studio.services import service as service_module

@@ -51,6 +51,7 @@ from venom_module_brand_studio.api.schemas import (
     StrategyUpdateRequest,
 )
 from venom_module_brand_studio.services.service import (
+    MODULE_ID,
     BrandStudioService,
     ChannelAccountNotFoundError,
     CredentialProfileNotFoundError,
@@ -60,11 +61,12 @@ from venom_module_brand_studio.services.service import (
     health_payload,
 )
 
+
 def _module_data_guard(request: Request) -> None:
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         try:
             ensure_module_mutation_allowed(
-                module_id="brand_studio",
+                module_id=MODULE_ID,
                 operation_name=f"{request.method.lower()}:{request.url.path}",
             )
         except PermissionError as exc:

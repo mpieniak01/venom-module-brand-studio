@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from venom_core.core.module_data_policy import resolve_module_data_root
+
 from venom_module_brand_studio.api.schemas import (
     BrandBaseSource,
     BrandBaseSourceCreateRequest,
@@ -418,10 +419,7 @@ class BrandStudioService:
 
     def _module_data_root(self) -> Path:
         raw = (os.getenv("BRAND_STUDIO_DATA_ROOT") or "").strip()
-        base_dir = None
-        if raw:
-            candidate = Path(raw)
-            base_dir = candidate if candidate.suffix == "" else candidate.parent
+        base_dir = Path(raw) if raw else None
         return resolve_module_data_root(
             module_id=MODULE_ID,
             base_dir=base_dir,

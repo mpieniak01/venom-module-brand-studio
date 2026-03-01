@@ -125,7 +125,7 @@ After changing env values, restart Venom services.
    - `TRAFFIC_CONTROL_LOG_DIR=/tmp/venom/traffic-control`.
 
 ### Canonical audit stream publishing
-1. Module audit entries są persystowane lokalnie w `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
+1. Module audit entries are persisted locally in `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
 2. Each new audit entry is also published (best-effort) to core endpoint `/api/v1/audit/stream`.
 3. Queue events for `github` channel are marked as technical (`core.technical.github_publish`) for visibility in core audit.
 4. Publishing can be controlled by:
@@ -136,10 +136,10 @@ After changing env values, restart Venom services.
    - `BRAND_STUDIO_AUDIT_INGEST_TOKEN=<optional token>`
 
 ### Runtime state persistence
-1. Queue and audit są persystowane w `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
+1. Queue and audit are persisted in `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
 2. After backend restart, queue and audit entries are restored from local state file.
-3. Channel accounts and account telemetry są persystowane w `BRAND_STUDIO_DATA_ROOT/accounts-state.json`.
-4. Draft bundles i draft-generation cache są persystowane w `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
+3. Channel accounts and account telemetry are persisted in `BRAND_STUDIO_DATA_ROOT/accounts-state.json`.
+4. Draft bundles and draft-generation cache are persisted in `BRAND_STUDIO_DATA_ROOT/runtime-state.json`.
 
 ### Draft generation cache (LLM stability)
 1. Repeated `POST /drafts/generate` with the same input returns cached draft by default.
@@ -154,7 +154,7 @@ After changing env values, restart Venom services.
      - supported values: `@hourly`, `@daily`, `@weekly`, `*/N * * * *`,
    - `BRAND_STUDIO_MONITORING_SCHEDULE_MINUTES` (fallback when CRON is not set).
 3. Scheduled scans are triggered lazily on monitoring reads (`/monitoring/summary`, `/monitoring/results`) when interval is due.
-4. Monitoring entities są persystowane w `BRAND_STUDIO_DATA_ROOT/monitoring-state.json`.
+4. Monitoring entities are persisted in `BRAND_STUDIO_DATA_ROOT/monitoring-state.json`.
 
 ### Channel capability matrix (161_C)
 1. `github` / `blog`: real publish connector.
