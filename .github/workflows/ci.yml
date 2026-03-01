@@ -16,9 +16,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mpieniak01/Venom
-          # Required for module_data_policy contract introduced in PR 184.
-          # Keep this ref in sync with the core branch/merge target.
-          ref: pr/184-optional-modules-contracts-gates
+          # Use stable core branch (PR refs are deleted after merge).
+          ref: main
           path: venom-core
 
       - name: Set up Python
